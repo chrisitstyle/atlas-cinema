@@ -1,7 +1,6 @@
 name: atlas-cinema
 
 services:
-
   discovery-server:
     build:
       context: ../backend/discovery-server
@@ -9,6 +8,25 @@ services:
     ports:
       - "8761:8761"
 
+  movie-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: movie_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - movie-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d movie_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   movie-service:
     build:
@@ -18,9 +36,15 @@ services:
       EUREKA_URL: http://discovery-server:8761/eureka/
       EUREKA_PREFER_IP: "true"
 
-    depends_on:
-      - discovery-server
+      DB_URL: jdbc:postgresql://movie-db:5432/movie_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
 
+    depends_on:
+      discovery-server:
+        condition: service_started
+      movie-db:
+        condition: service_healthy
 
   api-gateway:
     build:
@@ -36,3 +60,6 @@ services:
     depends_on:
       - discovery-server
       - movie-service
+
+volumes:
+  movie-db-data:
