@@ -1,0 +1,38 @@
+name: atlas-cinema
+
+services:
+
+  discovery-server:
+    build:
+      context: ../backend/discovery-server
+
+    ports:
+      - "8761:8761"
+
+
+  movie-service:
+    build:
+      context: ../backend/movie-service
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+    depends_on:
+      - discovery-server
+
+
+  api-gateway:
+    build:
+      context: ../backend/api-gateway
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+    depends_on:
+      - discovery-server
+      - movie-service
