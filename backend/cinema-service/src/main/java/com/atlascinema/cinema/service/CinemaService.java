@@ -124,19 +124,22 @@ public class CinemaService {
     }
 
     @Transactional(readOnly = true)
-    public List<SeatResponse> getSeats(
-            UUID cinemaId,
-            UUID hallId
-    ) {
+    public List<SeatResponse> getSeats(UUID cinemaId, UUID hallId) {
         Hall hall = hallRepository
                 .findByIdAndCinema_Id(hallId, cinemaId)
-                .orElseThrow(() ->
-                        new HallNotFoundException(hallId, cinemaId)
-                );
+                .orElseThrow(() -> new HallNotFoundException(hallId, cinemaId));
 
         return seatRepository.findAllByHall_Id(hall.getId())
                 .stream()
                 .map(SeatResponse::from)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public CinemaStructureResponse getCinemaStructure(UUID cinemaId) {
+        Cinema cinema = cinemaRepository.findWithHallsById(cinemaId).orElseThrow(
+                () -> new CinemaNotFoundException(cinemaId));
+
+        return CinemaStructureResponse.from(cinema);
     }
 }

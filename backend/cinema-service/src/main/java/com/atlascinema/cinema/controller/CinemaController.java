@@ -87,10 +87,11 @@ public class CinemaController {
     }
 
     @GetMapping("/{cinemaId}/halls/{hallId}/seats")
-    public List<SeatResponse> getSeats(
-            @PathVariable UUID cinemaId,
-            @PathVariable UUID hallId
-    ) {
-        return cinemaService.getSeats(cinemaId, hallId);
+    public List<SeatResponse> getSeats(@PathVariable UUID cinemaId, @PathVariable UUID hallId) {
+        return cinemaService.getSeats(cinemaId, hallId);}
+
+    @GetMapping("/{cinemaId}/structure")
+    public CinemaStructureResponse getCinemaStructure(@PathVariable UUID cinemaId) {
+        return cinemaService.getCinemaStructure(cinemaId);
     }
 }
