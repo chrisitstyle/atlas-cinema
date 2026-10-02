@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -27,6 +28,18 @@ public class CinemaController {
                 .body(cinema);
     }
 
+    @GetMapping("/{cinemaId}")
+    public CinemaResponse getCinemaById(
+            @PathVariable UUID cinemaId
+    ) {
+        return cinemaService.getCinemaById(cinemaId);
+    }
+
+    @GetMapping
+    public List<CinemaResponse> getCinemas() {
+        return cinemaService.getCinemas();
+    }
+
     @PostMapping("/{cinemaId}/halls")
     public ResponseEntity<HallResponse> addHall(
             @PathVariable UUID cinemaId,
@@ -37,6 +50,13 @@ public class CinemaController {
         return ResponseEntity.created(
                         URI.create("/cinemas/" + cinemaId + "/halls/" + hall.id()))
                 .body(hall);
+    }
+
+    @GetMapping("/{cinemaId}/halls")
+    public List<HallResponse> getHalls(
+            @PathVariable UUID cinemaId
+    ) {
+        return cinemaService.getHalls(cinemaId);
     }
 
     @PostMapping("/{cinemaId}/halls/{hallId}/seats")
@@ -55,5 +75,22 @@ public class CinemaController {
                                         + "/seats/"
                                         + seat.id()))
                 .body(seat);
+    }
+
+    @GetMapping("/{cinemaId}/halls/{hallId}/seats/{seatId}")
+    public SeatResponse getSeatById(
+            @PathVariable UUID cinemaId,
+            @PathVariable UUID hallId,
+            @PathVariable UUID seatId
+    ) {
+        return cinemaService.getSeatById(cinemaId, hallId, seatId);
+    }
+
+    @GetMapping("/{cinemaId}/halls/{hallId}/seats")
+    public List<SeatResponse> getSeats(
+            @PathVariable UUID cinemaId,
+            @PathVariable UUID hallId
+    ) {
+        return cinemaService.getSeats(cinemaId, hallId);
     }
 }

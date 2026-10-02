@@ -7,6 +7,7 @@ import com.atlascinema.cinema.dto.*;
 import com.atlascinema.cinema.exception.CinemaNotFoundException;
 import com.atlascinema.cinema.exception.HallNotFoundException;
 import com.atlascinema.cinema.exception.SeatAlreadyExistsException;
+import com.atlascinema.cinema.exception.SeatNotFoundException;
 import com.atlascinema.cinema.repository.CinemaRepository;
 import com.atlascinema.cinema.repository.HallRepository;
 import com.atlascinema.cinema.repository.SeatRepository;
@@ -14,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -36,6 +38,22 @@ public class CinemaService {
         return CinemaResponse.from(savedCinema);
     }
 
+    @Transactional(readOnly = true)
+    public CinemaResponse getCinemaById(UUID cinemaId) {
+        Cinema cinema = cinemaRepository.findById(cinemaId)
+                .orElseThrow(() -> new CinemaNotFoundException(cinemaId));
+
+        return CinemaResponse.from(cinema);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CinemaResponse> getCinemas() {
+        return cinemaRepository.findAll()
+                .stream()
+                .map(CinemaResponse::from)
+                .toList();
+    }
+
     @Transactional
     public HallResponse addHall(
             UUID cinemaId,
@@ -49,14 +67,25 @@ public class CinemaService {
         return HallResponse.from(hall);
     }
 
+    @Transactional(readOnly = true)
+    public List<HallResponse> getHalls(UUID cinemaId) {
+        if (!cinemaRepository.existsById(cinemaId)) {
+            throw new CinemaNotFoundException(cinemaId);
+        }
+
+        return hallRepository.findAllByCinema_Id(cinemaId)
+                .stream()
+                .map(HallResponse::from)
+                .toList();
+    }
+
     @Transactional
     public SeatResponse addSeat(
             UUID cinemaId,
             UUID hallId,
             CreateSeatRequest request
     ) {
-        Hall hall = hallRepository
-                .findByIdAndCinema_Id(hallId, cinemaId)
+        Hall hall = hallRepository.findByIdAndCinema_Id(hallId, cinemaId)
                 .orElseThrow(() -> new HallNotFoundException(hallId, cinemaId));
 
         boolean seatExists = seatRepository.existsByHall_IdAndRowAndNumber(
@@ -79,5 +108,35 @@ public class CinemaService {
         );
 
         return SeatResponse.from(seat);
+    }
+
+    @Transactional(readOnly = true)
+    public SeatResponse getSeatById(
+            UUID cinemaId,
+            UUID hallId,
+            UUID seatId
+    ) {
+        Seat seat = seatRepository
+                .findByIdAndHall_IdAndHall_Cinema_Id(seatId, hallId, cinemaId)
+                .orElseThrow(() -> new SeatNotFoundException(seatId, hallId, cinemaId));
+
+        return SeatResponse.from(seat);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SeatResponse> getSeats(
+            UUID cinemaId,
+            UUID hallId
+    ) {
+        Hall hall = hallRepository
+                .findByIdAndCinema_Id(hallId, cinemaId)
+                .orElseThrow(() ->
+                        new HallNotFoundException(hallId, cinemaId)
+                );
+
+        return seatRepository.findAllByHall_Id(hall.getId())
+                .stream()
+                .map(SeatResponse::from)
+                .toList();
     }
 }

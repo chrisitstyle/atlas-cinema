@@ -42,4 +42,16 @@ public class GlobalExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(SeatNotFoundException.class)
+    public ProblemDetail handleSeatNotFound(
+            SeatNotFoundException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+
+        problem.setTitle("Seat not found");
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
 }
