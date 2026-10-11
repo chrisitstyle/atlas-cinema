@@ -8,6 +8,8 @@ services:
     ports:
       - "8761:8761"
 
+  # movie-service
+
   movie-db:
     image: postgres:17-alpine
 
@@ -46,6 +48,48 @@ services:
       movie-db:
         condition: service_healthy
 
+  # cinema-service
+
+  cinema-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: cinema_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5434:5432"
+
+    volumes:
+      - cinema-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d cinema_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  cinema-service:
+    build:
+      context: ../backend/cinema-service
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+      DB_URL: jdbc:postgresql://cinema-db:5432/cinema_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+
+    depends_on:
+      discovery-server:
+        condition: service_started
+      cinema-db:
+        condition: service_healthy
+
+  # api-gateway
+
   api-gateway:
     build:
       context: ../backend/api-gateway
@@ -60,6 +104,8 @@ services:
     depends_on:
       - discovery-server
       - movie-service
+      - cinema-service
 
 volumes:
   movie-db-data:
+  cinema-db-data:
