@@ -4,7 +4,7 @@ package com.atlascinema.movie.domain;
 public enum Genre {
 
     ACTION,
-    ADEVNTURE,
+    ADVENTURE,
     ANIMATION,
     COMEDY,
     CRIME,

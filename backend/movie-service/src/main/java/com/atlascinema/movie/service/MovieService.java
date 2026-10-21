@@ -70,8 +70,7 @@ public class MovieService {
                 request.genre(),
                 request.releaseDate(),
                 request.posterUrl(),
-                request.trailerUrl()
-        );
+                request.trailerUrl());
 
         return MovieResponse.from(movie);
     }
