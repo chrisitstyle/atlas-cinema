@@ -7,8 +7,9 @@ public class HallNotFoundException extends RuntimeException {
     public HallNotFoundException(
             UUID hallId,
             UUID cinemaId) {
-        super(
-                "Hall with id " + hallId
-                        + " was not found in cinema " + cinemaId);
+        super("Hall with id " + hallId + " was not found in cinema " + cinemaId);
+    }
+    public HallNotFoundException(UUID hallId) {
+        super("Hall with id " + hallId + " was not found");
     }
 }
