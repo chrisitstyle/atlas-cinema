@@ -132,6 +132,15 @@ public class CinemaService {
     }
 
     @Transactional(readOnly = true)
+    public SeatResponse getSeatById(UUID hallId, UUID seatId) {
+        Seat seat = seatRepository
+                .findByIdAndHall_Id(seatId, hallId)
+                .orElseThrow(() -> new SeatNotFoundException(seatId, hallId));
+
+        return SeatResponse.from(seat);
+    }
+
+    @Transactional(readOnly = true)
     public List<SeatResponse> getSeats(UUID cinemaId, UUID hallId) {
         Hall hall = hallRepository
                 .findByIdAndCinema_Id(hallId, cinemaId)

@@ -9,4 +9,9 @@ public class SeatNotFoundException extends RuntimeException {
                         + " was not found in hall " + hallId
                         + " in cinema " + cinemaId);
     }
+
+    public SeatNotFoundException(UUID seatId, UUID hallId
+    ) {
+        super("Seat with id " + seatId + " was not found in hall " + hallId);
+    }
 }

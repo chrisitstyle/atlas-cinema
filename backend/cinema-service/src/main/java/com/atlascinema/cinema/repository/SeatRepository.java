@@ -17,4 +17,6 @@ public interface SeatRepository extends JpaRepository<Seat, UUID> {
             UUID seatId,
             UUID hallId,
             UUID cinemaId);
+
+    Optional<Seat> findByIdAndHall_Id(UUID seatId, UUID hallId);
 }
