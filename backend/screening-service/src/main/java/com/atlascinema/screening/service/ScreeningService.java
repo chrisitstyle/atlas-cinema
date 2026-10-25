@@ -7,18 +7,19 @@ import com.atlascinema.screening.domain.Screening;
 import com.atlascinema.screening.domain.ScreeningStatus;
 import com.atlascinema.screening.dto.CreateScreeningRequest;
 import com.atlascinema.screening.dto.ScreeningResponse;
-import com.atlascinema.screening.exception.HallNotFoundException;
-import com.atlascinema.screening.exception.MovieNotFoundException;
-import com.atlascinema.screening.exception.MovieUnavailableException;
-import com.atlascinema.screening.exception.ScreeningConflictException;
+import com.atlascinema.screening.exception.*;
 import com.atlascinema.screening.repository.ScreeningRepository;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -37,8 +38,7 @@ public class ScreeningService {
         MovieClientResponse movie = getMovie(request.movieId());
 
         if (movie.discontinued()) {
-            throw new MovieUnavailableException(
-                    request.movieId());
+            throw new MovieUnavailableException(request.movieId());
         }
 
         ensureHallExists(request.hallId());
@@ -48,31 +48,73 @@ public class ScreeningService {
                 request.hallId(),
                 request.startsAt(),
                 movie.durationMinutes(),
-                request.basePrice());
+                request.basePrice()
+        );
 
         LocalDateTime windowStart = screening.getStartsAt()
-                        .minusMinutes(TECHNICAL_BREAK_MINUTES);
+                .minusMinutes(TECHNICAL_BREAK_MINUTES);
 
         LocalDateTime windowEnd = screening.getEndsAt()
-                        .plusMinutes(TECHNICAL_BREAK_MINUTES);
+                .plusMinutes(TECHNICAL_BREAK_MINUTES);
 
         long conflicts = screeningRepository.countConflictingScreenings(
-                        request.hallId(),
-                        ScreeningStatus.SCHEDULED,
-                        windowStart,
-                        windowEnd);
+                request.hallId(),
+                ScreeningStatus.SCHEDULED,
+                windowStart,
+                windowEnd
+        );
 
         if (conflicts > 0) {
             throw new ScreeningConflictException(
                     request.hallId(),
                     screening.getStartsAt(),
-                    screening.getEndsAt());
+                    screening.getEndsAt()
+            );
         }
 
-        Screening saved =
-                screeningRepository.save(screening);
+        Screening saved = screeningRepository.save(screening);
 
         return ScreeningResponse.from(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ScreeningResponse> getScreenings(
+            UUID movieId,
+            UUID hallId,
+            LocalDate date
+    ) {
+        validateFilters(movieId, hallId, date);
+
+        if (movieId != null) {
+            return toResponse(
+                    screeningRepository
+                            .findAllByMovieIdOrderByStartsAtAsc(movieId)
+            );
+        }
+
+        if (hallId != null) {
+            return toResponse(
+                    screeningRepository
+                            .findAllByHallIdOrderByStartsAtAsc(hallId)
+            );
+        }
+
+        if (date != null) {
+            LocalDateTime from = date.atStartOfDay();
+            LocalDateTime to = date.plusDays(1).atStartOfDay();
+
+            return toResponse(
+                    screeningRepository
+                            .findAllByStartsAtGreaterThanEqualAndStartsAtLessThanOrderByStartsAtAsc(
+                                    from,
+                                    to
+                            )
+            );
+        }
+
+        return toResponse(
+                screeningRepository.findAllByOrderByStartsAtAsc()
+        );
     }
 
     private MovieClientResponse getMovie(UUID movieId) {
@@ -89,5 +131,27 @@ public class ScreeningService {
         } catch (FeignException.NotFound exception) {
             throw new HallNotFoundException(hallId);
         }
+    }
+
+    private void validateFilters(
+            UUID movieId,
+            UUID hallId,
+            LocalDate date
+    ) {
+        long filtersCount = Stream.of(movieId, hallId, date)
+                .filter(Objects::nonNull)
+                .count();
+
+        if (filtersCount > 1) {
+            throw new InvalidScreeningFilterException();
+        }
+    }
+
+    private List<ScreeningResponse> toResponse(
+            List<Screening> screenings
+    ) {
+        return screenings.stream()
+                .map(ScreeningResponse::from)
+                .toList();
     }
 }

@@ -55,4 +55,16 @@ public class GlobalExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(InvalidScreeningFilterException.class)
+    public ProblemDetail handleInvalidScreeningFilter(
+            InvalidScreeningFilterException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+
+        problem.setTitle("Invalid screening filter");
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
 }

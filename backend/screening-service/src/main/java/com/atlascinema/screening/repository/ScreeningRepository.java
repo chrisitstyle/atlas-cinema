@@ -7,10 +7,22 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 public interface ScreeningRepository
         extends JpaRepository<Screening, UUID> {
+
+    List<Screening> findAllByOrderByStartsAtAsc();
+
+    List<Screening> findAllByMovieIdOrderByStartsAtAsc(UUID movieId);
+
+    List<Screening> findAllByHallIdOrderByStartsAtAsc(UUID hallId);
+
+    List<Screening>
+    findAllByStartsAtGreaterThanEqualAndStartsAtLessThanOrderByStartsAtAsc(
+            LocalDateTime from,
+            LocalDateTime to);
 
     @Query("""
             select count(s)
