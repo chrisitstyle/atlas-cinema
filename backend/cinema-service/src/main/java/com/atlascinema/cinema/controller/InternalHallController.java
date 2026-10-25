@@ -1,6 +1,7 @@
 package com.atlascinema.cinema.controller;
 
 import com.atlascinema.cinema.dto.HallResponse;
+import com.atlascinema.cinema.dto.SeatResponse;
 import com.atlascinema.cinema.service.CinemaService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,4 +21,11 @@ public class InternalHallController {
     @GetMapping("/{hallId}")
     public HallResponse getHallById(@PathVariable UUID hallId) {
         return cinemaService.getHallById(hallId);}
+
+    @GetMapping("/{hallId}/seats/{seatId}")
+    public SeatResponse getSeatById(
+            @PathVariable UUID hallId,
+            @PathVariable UUID seatId) {
+        return cinemaService.getSeatById(hallId, seatId);
+    }
 }
