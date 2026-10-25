@@ -79,6 +79,14 @@ public class CinemaService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public HallResponse getHallById(UUID hallId) {
+        Hall hall = hallRepository.findById(hallId)
+                .orElseThrow(() -> new HallNotFoundException(hallId));
+
+        return HallResponse.from(hall);
+    }
+
     @Transactional
     public SeatResponse addSeat(
             UUID cinemaId,
