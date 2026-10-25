@@ -7,10 +7,7 @@ import com.atlascinema.booking.client.dto.ScreeningClientStatus;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
-import com.atlascinema.booking.exception.ScreeningNotFoundException;
-import com.atlascinema.booking.exception.ScreeningUnavailableException;
-import com.atlascinema.booking.exception.SeatAlreadyReservedException;
-import com.atlascinema.booking.exception.SeatNotFoundException;
+import com.atlascinema.booking.exception.*;
 import com.atlascinema.booking.repository.BookingRepository;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -31,33 +29,34 @@ public class BookingService {
     private final CinemaClient cinemaClient;
     private final Clock clock;
 
+    private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
+
     @Transactional
-    public BookingResponse createBooking(CreateBookingRequest request) {
+    public BookingResponse createBooking(
+            CreateBookingRequest request
+    ) {
         LocalDateTime now = LocalDateTime.now(clock);
+
+        LocalDateTime expiresAt = now.plus(HOLD_DURATION);
 
         ScreeningClientResponse screening = getScreening(request.screeningId());
 
-        ensureScreeningIsAvailable(
-                screening,
-                now
-        );
+        ensureScreeningIsAvailable(screening, now);
 
         Booking booking = Booking.create(
-                request.customerId(),
-                request.contactEmail(),
-                request.screeningId(),
-                now
-        );
+                        request.customerId(),
+                        request.contactEmail(),
+                        request.screeningId(),
+                        now);
 
         for (UUID seatId : request.seatIds()) {
-            ensureSeatExists(
-                    screening.hallId(),
-                    seatId);
 
-            booking.addSeat(
-                    seatId,
-                    screening.basePrice());
+            ensureSeatExists(screening.hallId(), seatId);
+
+            booking.holdSeat(seatId, screening.basePrice(), expiresAt);
         }
+
+        booking.markAsHeld(expiresAt);
 
         try {
             Booking saved = bookingRepository.saveAndFlush(booking);
@@ -65,8 +64,25 @@ public class BookingService {
             return BookingResponse.from(saved);
 
         } catch (DataIntegrityViolationException exception) {
-            throw new SeatAlreadyReservedException(request.screeningId());
+            throw new SeatAlreadyReservedException(
+                    request.screeningId()
+            );
         }
+    }
+
+    @Transactional
+    public BookingResponse cancelBooking(UUID bookingId) {
+        Booking booking = bookingRepository
+                .findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException(bookingId));
+
+        ScreeningClientResponse screening = getScreening(booking.getScreeningId());
+
+        LocalDateTime now = LocalDateTime.now(clock);
+
+        booking.cancel(now, screening.startsAt());
+
+        return BookingResponse.from(booking);
     }
 
     private ScreeningClientResponse getScreening(

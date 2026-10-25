@@ -17,31 +17,29 @@ public class BookingSeat {
     @Id
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "booking_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY,
+            optional = false)
+    @JoinColumn(name = "booking_id",
+            nullable = false)
     private Booking booking;
 
-    @Column(name = "screening_id", nullable = false)
-    private UUID screeningId;
-
-    @Column(name = "seat_id", nullable = false)
+    @Column(name = "seat_id",
+            nullable = false)
     private UUID seatId;
 
-    @Column(
-            nullable = false,
+    @Column(nullable = false,
             precision = 10,
-            scale = 2
-    )
+            scale = 2)
     private BigDecimal price;
 
     private BookingSeat(
             UUID id,
             Booking booking,
             UUID seatId,
-            BigDecimal price) {
+            BigDecimal price
+    ) {
         this.id = id;
         this.booking = booking;
-        this.screeningId = booking.getScreeningId();
         this.seatId = seatId;
         this.price = price;
     }
@@ -49,7 +47,8 @@ public class BookingSeat {
     static BookingSeat create(
             Booking booking,
             UUID seatId,
-            BigDecimal price) {
+            BigDecimal price
+    ) {
         return new BookingSeat(
                 UUID.randomUUID(),
                 booking,

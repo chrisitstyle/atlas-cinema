@@ -6,12 +6,10 @@ import com.atlascinema.booking.service.BookingService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/bookings")
@@ -28,5 +26,10 @@ public class BookingController {
 
         return ResponseEntity.created(
                 URI.create("/bookings/" + booking.id())).body(booking);
+    }
+
+    @PatchMapping("/{bookingId}/cancel")
+    public BookingResponse cancelBooking(@PathVariable UUID bookingId) {
+        return bookingService.cancelBooking(bookingId);
     }
 }

@@ -1,5 +1,6 @@
 package com.atlascinema.booking.domain;
 
+import com.atlascinema.booking.exception.BookingCancellationNotAllowedException;
 import com.atlascinema.booking.exception.SeatAlreadyAddedException;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -44,8 +45,7 @@ public class Booking {
             name = "total_price",
             nullable = false,
             precision = 10,
-            scale = 2
-    )
+            scale = 2)
     private BigDecimal totalPrice;
 
     @OneToMany(
@@ -54,6 +54,13 @@ public class Booking {
             orphanRemoval = true
     )
     private List<BookingSeat> seats = new ArrayList<>();
+
+    @OneToMany(
+            mappedBy = "booking",
+            cascade = CascadeType.ALL,
+            orphanRemoval = true
+    )
+    private List<SeatHold> holds = new ArrayList<>();
 
     private Booking(
             UUID id,
@@ -89,29 +96,54 @@ public class Booking {
                 BookingStatus.PENDING,
                 createdAt,
                 null,
-                BigDecimal.ZERO
-        );
+                BigDecimal.ZERO);
     }
 
-    public void addSeat(
+    public void holdSeat(
             UUID seatId,
-            BigDecimal price
+            BigDecimal price,
+            LocalDateTime expiresAt
     ) {
         boolean alreadyAdded = seats.stream()
-                .anyMatch(seat -> seat.getSeatId().equals(seatId));
+                .anyMatch(seat -> seat.getSeatId()
+                                .equals(seatId));
 
         if (alreadyAdded) {
             throw new SeatAlreadyAddedException(seatId);
         }
 
         BookingSeat bookingSeat = BookingSeat.create(
-                this,
-                seatId,
-                price
-        );
+                        this,
+                        seatId,
+                        price);
+
+        SeatHold seatHold = SeatHold.create(
+                        this,
+                        seatId,
+                        expiresAt);
 
         seats.add(bookingSeat);
+        holds.add(seatHold);
 
         totalPrice = totalPrice.add(price);
+    }
+
+    public void markAsHeld(LocalDateTime expiresAt) {
+        this.status = BookingStatus.HELD;
+        this.expiresAt = expiresAt;
+    }
+
+    public void cancel(LocalDateTime now, LocalDateTime screeningStartsAt
+    ) {
+        if (status != BookingStatus.HELD) {
+            throw new BookingCancellationNotAllowedException(id);
+        }
+
+        if (!now.isBefore(screeningStartsAt)) {
+            throw new BookingCancellationNotAllowedException(id);
+        }
+
+        status = BookingStatus.CANCELLED;
+        holds.clear();
     }
 }

@@ -9,10 +9,7 @@ import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingStatus;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
-import com.atlascinema.booking.exception.ScreeningNotFoundException;
-import com.atlascinema.booking.exception.ScreeningUnavailableException;
-import com.atlascinema.booking.exception.SeatAlreadyReservedException;
-import com.atlascinema.booking.exception.SeatNotFoundException;
+import com.atlascinema.booking.exception.*;
 import com.atlascinema.booking.repository.BookingRepository;
 import feign.FeignException;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +25,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,10 +97,13 @@ class BookingServiceTest {
                 .isEqualTo(screeningId);
 
         assertThat(response.status())
-                .isEqualTo(BookingStatus.PENDING);
+                .isEqualTo(BookingStatus.HELD);
 
         assertThat(response.createdAt())
                 .isEqualTo(now);
+
+        assertThat(response.expiresAt())
+                .isEqualTo(now.plusMinutes(10));
 
         assertThat(response.totalPrice())
                 .isEqualByComparingTo("29.90");
@@ -129,27 +130,20 @@ class BookingServiceTest {
                 .thenReturn(createAvailableScreening());
 
         when(cinemaClient.getSeat(hallId, seatId))
-                .thenReturn(
-                        new SeatClientResponse(
-                                seatId,
-                                hallId));
+                .thenReturn(new SeatClientResponse(seatId, hallId));
 
         when(bookingRepository.saveAndFlush(any(Booking.class)))
                 .thenAnswer(invocation ->
                         invocation.getArgument(0)
                 );
 
-        BookingResponse response = bookingService.createBooking(
-                        createRequest(List.of(seatId)));
+        BookingResponse response = bookingService.createBooking(createRequest(List.of(seatId)));
 
         assertThat(response.createdAt())
-                .isEqualTo(
-                        LocalDateTime.of(
-                                2030,
-                                1,
-                                10,
-                                12,
-                                0));
+                .isEqualTo(LocalDateTime.of(2030, 1, 10, 12, 0));
+
+        assertThat(response.expiresAt())
+                .isEqualTo(LocalDateTime.of(2030, 1, 10, 12, 10));
     }
 
     @Test
@@ -303,6 +297,102 @@ class BookingServiceTest {
         assertThatThrownBy(() -> bookingService.createBooking(createRequest(List.of(seatId))))
                 .isInstanceOf(SeatAlreadyReservedException.class)
                 .hasMessageContaining(screeningId.toString());
+    }
+
+    @Test
+    void cancelBooking_shouldCancelBooking_whenBookingIsHeldAndScreeningHasNotStarted() {
+        Booking booking = Booking.create(
+                null,
+                "guest@example.com",
+                screeningId,
+                now.minusMinutes(1));
+
+        LocalDateTime expiresAt = now.plusMinutes(10);
+
+        booking.holdSeat(
+                seatId,
+                new BigDecimal("29.90"),
+                expiresAt);
+
+        booking.markAsHeld(expiresAt);
+
+        when(bookingRepository.findById(booking.getId()))
+                .thenReturn(Optional.of(booking));
+
+        when(screeningClient.getScreening(screeningId))
+                .thenReturn(
+                        new ScreeningClientResponse(
+                                screeningId,
+                                hallId,
+                                now.plusHours(2),
+                                new BigDecimal("29.90"),
+                                ScreeningClientStatus.SCHEDULED));
+
+        BookingResponse response = bookingService.cancelBooking(booking.getId());
+
+        assertThat(response.status()).isEqualTo(BookingStatus.CANCELLED);
+
+        assertThat(booking.getHolds()).isEmpty();
+
+        assertThat(booking.getSeats()).hasSize(1);
+
+        verify(bookingRepository).findById(booking.getId());
+
+        verify(screeningClient).getScreening(screeningId);
+
+        verify(bookingRepository, never())
+                .save(any(Booking.class));
+    }
+
+    @Test
+    void cancelBooking_shouldThrowBookingNotFoundException_whenBookingDoesNotExist() {
+        UUID bookingId = UUID.randomUUID();
+
+        when(bookingRepository.findById(bookingId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> bookingService.cancelBooking(bookingId))
+                .isInstanceOf(BookingNotFoundException.class)
+                .hasMessageContaining(bookingId.toString());
+
+        verifyNoInteractions(screeningClient);
+    }
+
+    @Test
+    void cancelBooking_shouldThrowBookingCancellationNotAllowedException_whenScreeningHasStarted() {
+        Booking booking = Booking.create(
+                null,
+                "guest@example.com",
+                screeningId,
+                now.minusMinutes(20));
+
+        LocalDateTime expiresAt = now.plusMinutes(10);
+
+        booking.holdSeat(
+                seatId,
+                new BigDecimal("29.90"),
+                expiresAt);
+
+        booking.markAsHeld(expiresAt);
+
+        when(bookingRepository.findById(booking.getId()))
+                .thenReturn(Optional.of(booking));
+
+        when(screeningClient.getScreening(screeningId))
+                .thenReturn(
+                        new ScreeningClientResponse(
+                                screeningId,
+                                hallId,
+                                now.minusMinutes(1),
+                                new BigDecimal("29.90"),
+                                ScreeningClientStatus.SCHEDULED));
+
+        assertThatThrownBy(() -> bookingService.cancelBooking(booking.getId()))
+                .isInstanceOf(BookingCancellationNotAllowedException.class);
+
+        assertThat(booking.getStatus()).isEqualTo(BookingStatus.HELD);
+
+        assertThat(booking.getHolds()).hasSize(1);
     }
 
     private CreateBookingRequest createRequest(

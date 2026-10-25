@@ -1,2 +1,5 @@
-TRUNCATE TABLE booking_seats, bookings
+TRUNCATE TABLE
+    seat_holds,
+    booking_seats,
+    bookings
 RESTART IDENTITY CASCADE;

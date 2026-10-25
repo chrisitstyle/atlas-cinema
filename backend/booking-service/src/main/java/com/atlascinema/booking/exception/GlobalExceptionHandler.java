@@ -67,4 +67,27 @@ public class GlobalExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(BookingNotFoundException.class)
+    public ProblemDetail handleBookingNotFound(BookingNotFoundException exception) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+
+        problem.setTitle("Booking not found");
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
+
+    @ExceptionHandler(BookingCancellationNotAllowedException.class)
+    public ProblemDetail handleBookingCancellationNotAllowed(
+            BookingCancellationNotAllowedException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+
+        problem.setTitle("Booking cancellation not allowed");
+
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
 }
