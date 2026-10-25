@@ -67,4 +67,28 @@ public class GlobalExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(ScreeningNotFoundException.class)
+    public ProblemDetail handleScreeningNotFound(
+            ScreeningNotFoundException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+
+        problem.setTitle("Screening not found");
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
+
+    @ExceptionHandler(ScreeningAlreadyCancelledException.class)
+    public ProblemDetail handleScreeningAlreadyCancelled(
+            ScreeningAlreadyCancelledException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+
+        problem.setTitle("Screening already cancelled");
+        problem.setDetail(exception.getMessage());
+
+        return problem;
+    }
 }

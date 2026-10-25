@@ -78,6 +78,14 @@ public class ScreeningService {
     }
 
     @Transactional(readOnly = true)
+    public ScreeningResponse getScreeningById(UUID screeningId) {
+        Screening screening = screeningRepository.findById(screeningId)
+                .orElseThrow(() -> new ScreeningNotFoundException(screeningId));
+
+        return ScreeningResponse.from(screening);
+    }
+
+    @Transactional(readOnly = true)
     public List<ScreeningResponse> getScreenings(
             UUID movieId,
             UUID hallId,
@@ -86,35 +94,35 @@ public class ScreeningService {
         validateFilters(movieId, hallId, date);
 
         if (movieId != null) {
-            return toResponse(
-                    screeningRepository
-                            .findAllByMovieIdOrderByStartsAtAsc(movieId)
-            );
+            return toResponse(screeningRepository
+                            .findAllByMovieIdOrderByStartsAtAsc(movieId));
         }
 
         if (hallId != null) {
-            return toResponse(
-                    screeningRepository
-                            .findAllByHallIdOrderByStartsAtAsc(hallId)
-            );
+            return toResponse(screeningRepository
+                            .findAllByHallIdOrderByStartsAtAsc(hallId));
         }
 
         if (date != null) {
             LocalDateTime from = date.atStartOfDay();
             LocalDateTime to = date.plusDays(1).atStartOfDay();
 
-            return toResponse(
-                    screeningRepository
+            return toResponse(screeningRepository
                             .findAllByStartsAtGreaterThanEqualAndStartsAtLessThanOrderByStartsAtAsc(
-                                    from,
-                                    to
-                            )
-            );
+                                    from, to));
         }
 
-        return toResponse(
-                screeningRepository.findAllByOrderByStartsAtAsc()
-        );
+        return toResponse(screeningRepository.findAllByOrderByStartsAtAsc());
+    }
+
+    @Transactional
+    public ScreeningResponse cancelScreening(UUID screeningId) {
+        Screening screening = screeningRepository.findById(screeningId)
+                .orElseThrow(() -> new ScreeningNotFoundException(screeningId));
+
+        screening.cancel();
+
+        return ScreeningResponse.from(screening);
     }
 
     private MovieClientResponse getMovie(UUID movieId) {

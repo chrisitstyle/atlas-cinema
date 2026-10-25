@@ -1,5 +1,6 @@
 package com.atlascinema.screening.domain;
 
+import com.atlascinema.screening.exception.ScreeningAlreadyCancelledException;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -78,5 +79,13 @@ public class Screening {
                 basePrice,
                 ScreeningStatus.SCHEDULED
         );
+    }
+
+    public void cancel() {
+        if (status == ScreeningStatus.CANCELLED) {
+            throw new ScreeningAlreadyCancelledException(id);
+        }
+
+        this.status = ScreeningStatus.CANCELLED;
     }
 }

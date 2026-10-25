@@ -32,6 +32,11 @@ public class ScreeningController {
                 .body(screening);
     }
 
+    @GetMapping("/{screeningId}")
+    public ScreeningResponse getScreeningById(@PathVariable UUID screeningId) {
+        return screeningService.getScreeningById(screeningId);
+    }
+
     @GetMapping
     public List<ScreeningResponse> getAllScreenings(
             @RequestParam(required = false) UUID movieId,
@@ -41,5 +46,10 @@ public class ScreeningController {
             LocalDate date
     ) {
         return screeningService.getScreenings(movieId,hallId,date);
+    }
+
+    @PatchMapping("/{screeningId}/cancel")
+    public ScreeningResponse cancelScreening(@PathVariable UUID screeningId) {
+        return screeningService.cancelScreening(screeningId);
     }
 }
