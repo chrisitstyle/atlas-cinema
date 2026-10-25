@@ -3,7 +3,6 @@ package com.atlascinema.booking.integration.repository;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingSeat;
 import com.atlascinema.booking.domain.BookingStatus;
-import com.atlascinema.booking.domain.SeatHold;
 import com.atlascinema.booking.integration.BaseTestEnvironment;
 import com.atlascinema.booking.repository.BookingRepository;
 import jakarta.persistence.EntityManager;
@@ -11,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
@@ -19,7 +17,6 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -33,7 +30,7 @@ class BookingRepositoryIntegrationTest extends BaseTestEnvironment {
     private EntityManager entityManager;
 
     @Test
-    void save_shouldPersistBookingWithSeatsAndHolds_whenBookingIsValid() {
+    void save_shouldPersistBookingWithSeats_whenBookingIsValid() {
         UUID screeningId = UUID.randomUUID();
 
         LocalDateTime createdAt = LocalDateTime.of(2030, 1, 10, 12, 0);
@@ -49,15 +46,9 @@ class BookingRepositoryIntegrationTest extends BaseTestEnvironment {
                 screeningId,
                 createdAt);
 
-        booking.holdSeat(
-                firstSeatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(firstSeatId, new BigDecimal("29.90"));
 
-        booking.holdSeat(
-                secondSeatId,
-                new BigDecimal("39.90"),
-                expiresAt);
+        booking.addSeat(secondSeatId, new BigDecimal("39.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -66,8 +57,8 @@ class BookingRepositoryIntegrationTest extends BaseTestEnvironment {
         entityManager.clear();
 
         Booking found = bookingRepository
-                        .findById(saved.getId())
-                        .orElseThrow();
+                .findById(saved.getId())
+                .orElseThrow();
 
         assertThat(found.getId()).isEqualTo(saved.getId());
 
@@ -79,7 +70,6 @@ class BookingRepositoryIntegrationTest extends BaseTestEnvironment {
 
         assertThat(found.getSeats()).hasSize(2);
 
-        assertThat(found.getHolds()).hasSize(2);
 
         assertThat(found.getTotalPrice()).isEqualByComparingTo("69.80");
 
@@ -89,111 +79,92 @@ class BookingRepositoryIntegrationTest extends BaseTestEnvironment {
                         firstSeatId,
                         secondSeatId);
 
-        assertThat(found.getHolds())
-                .allSatisfy(hold -> {
-                    assertThat(hold.getScreeningId())
-                            .isEqualTo(screeningId);
-
-                    assertThat(hold.getExpiresAt())
-                            .isEqualTo(expiresAt);
-                });
-
-        assertThat(found.getHolds())
-                .extracting(SeatHold::getSeatId)
-                .containsExactlyInAnyOrder(
-                        firstSeatId,
-                        secondSeatId);
     }
 
     @Test
-    void save_shouldThrowDataIntegrityViolationException_whenSeatIsAlreadyHeldForScreening() {
-        UUID screeningId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
+    void expireBookings_shouldExpireHeldBookings_whenExpiresAtIsInThePast() {
+        LocalDateTime now = LocalDateTime.of(2030, 1, 10, 12, 0);
 
-        LocalDateTime firstCreatedAt = LocalDateTime.of(2030, 1, 10, 12, 0);
-
-        LocalDateTime firstExpiresAt = firstCreatedAt.plusMinutes(10);
-
-        Booking firstBooking = Booking.create(
+        Booking expiredBooking = Booking.create(
                 UUID.randomUUID(),
-                "first@example.com",
-                screeningId,
-                firstCreatedAt);
+                "expired@example.com",
+                UUID.randomUUID(),
+                now.minusMinutes(20));
 
-        firstBooking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                firstExpiresAt);
+        expiredBooking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
 
-        firstBooking.markAsHeld(firstExpiresAt);
+        expiredBooking.markAsHeld(now.minusMinutes(1));
 
-        bookingRepository.saveAndFlush(firstBooking);
+        Booking activeBooking = Booking.create(
+                UUID.randomUUID(),
+                "active@example.com",
+                UUID.randomUUID(),
+                now.minusMinutes(5));
+
+        activeBooking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
+
+        activeBooking.markAsHeld(now.plusMinutes(5));
+
+        bookingRepository.saveAndFlush(expiredBooking);
+        bookingRepository.saveAndFlush(activeBooking);
+
+        int updated = bookingRepository.expireBookings(
+                        now,
+                        BookingStatus.HELD,
+                        BookingStatus.EXPIRED);
 
         entityManager.clear();
 
-        LocalDateTime secondCreatedAt = LocalDateTime.of(2030, 1, 10, 12, 1);
+        Booking foundExpiredBooking = bookingRepository
+                        .findById(expiredBooking.getId())
+                        .orElseThrow();
 
-        LocalDateTime secondExpiresAt = secondCreatedAt.plusMinutes(10);
+        Booking foundActiveBooking = bookingRepository
+                        .findById(activeBooking.getId())
+                        .orElseThrow();
 
-        Booking secondBooking = Booking.create(
-                UUID.randomUUID(),
-                "second@example.com",
-                screeningId,
-                secondCreatedAt);
+        assertThat(updated).isEqualTo(1);
 
-        secondBooking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                secondExpiresAt);
+        assertThat(foundExpiredBooking.getStatus())
+                .isEqualTo(BookingStatus.EXPIRED);
 
-        secondBooking.markAsHeld(secondExpiresAt);
-
-        assertThatThrownBy(() -> bookingRepository.saveAndFlush(secondBooking))
-                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(foundActiveBooking.getStatus())
+                .isEqualTo(BookingStatus.HELD);
     }
 
     @Test
-    void save_shouldAllowSameSeat_whenScreeningIsDifferent() {
-        UUID seatId = UUID.randomUUID();
+    void expireBookings_shouldNotExpireBooking_whenBookingIsNotHeld() {
+        LocalDateTime now = LocalDateTime.of(2030, 1, 10, 12, 0);
 
-        UUID firstScreeningId = UUID.randomUUID();
-
-        UUID secondScreeningId = UUID.randomUUID();
-
-        LocalDateTime firstCreatedAt = LocalDateTime.of(2030, 1, 10, 12, 0);
-
-        LocalDateTime firstExpiresAt = firstCreatedAt.plusMinutes(10);
-
-        Booking firstBooking = Booking.create(
+        Booking booking = Booking.create(
                 UUID.randomUUID(),
-                "first@example.com",
-                firstScreeningId,
-                firstCreatedAt);
-
-        firstBooking.holdSeat(seatId,
-                new BigDecimal("29.90"),
-                firstExpiresAt);
-
-        firstBooking.markAsHeld(firstExpiresAt);
-
-        LocalDateTime secondCreatedAt = LocalDateTime.of(2030, 1, 10, 12, 1);
-
-        LocalDateTime secondExpiresAt = secondCreatedAt.plusMinutes(10);
-
-        Booking secondBooking = Booking.create(
+                "cancelled@example.com",
                 UUID.randomUUID(),
-                "second@example.com",
-                secondScreeningId,
-                secondCreatedAt);
+                now.minusMinutes(20));
 
-        secondBooking.holdSeat(seatId, new BigDecimal("29.90"), secondExpiresAt);
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
 
-        secondBooking.markAsHeld(secondExpiresAt);
+        booking.markAsHeld(now.minusMinutes(10));
 
-        bookingRepository.saveAndFlush(firstBooking);
+        booking.cancel(now.minusMinutes(5), now.plusHours(1));
 
-        bookingRepository.saveAndFlush(secondBooking);
+        bookingRepository.saveAndFlush(booking);
 
-        assertThat(bookingRepository.count()).isEqualTo(2);
+        int updated = bookingRepository.expireBookings(
+                        now,
+                        BookingStatus.HELD,
+                        BookingStatus.EXPIRED);
+
+        entityManager.clear();
+
+        Booking found = bookingRepository
+                        .findById(booking.getId())
+                        .orElseThrow();
+
+        assertThat(updated)
+                .isZero();
+
+        assertThat(found.getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
     }
 }

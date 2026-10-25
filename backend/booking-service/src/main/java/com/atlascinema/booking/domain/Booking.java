@@ -55,12 +55,6 @@ public class Booking {
     )
     private List<BookingSeat> seats = new ArrayList<>();
 
-    @OneToMany(
-            mappedBy = "booking",
-            cascade = CascadeType.ALL,
-            orphanRemoval = true
-    )
-    private List<SeatHold> holds = new ArrayList<>();
 
     private Booking(
             UUID id,
@@ -99,10 +93,9 @@ public class Booking {
                 BigDecimal.ZERO);
     }
 
-    public void holdSeat(
+    public void addSeat(
             UUID seatId,
-            BigDecimal price,
-            LocalDateTime expiresAt
+            BigDecimal price
     ) {
         boolean alreadyAdded = seats.stream()
                 .anyMatch(seat -> seat.getSeatId()
@@ -117,13 +110,7 @@ public class Booking {
                         seatId,
                         price);
 
-        SeatHold seatHold = SeatHold.create(
-                        this,
-                        seatId,
-                        expiresAt);
-
         seats.add(bookingSeat);
-        holds.add(seatHold);
 
         totalPrice = totalPrice.add(price);
     }
@@ -144,6 +131,5 @@ public class Booking {
         }
 
         status = BookingStatus.CANCELLED;
-        holds.clear();
     }
 }

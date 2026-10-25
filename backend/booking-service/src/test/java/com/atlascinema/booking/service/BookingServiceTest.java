@@ -5,6 +5,7 @@ import com.atlascinema.booking.client.ScreeningClient;
 import com.atlascinema.booking.client.dto.ScreeningClientResponse;
 import com.atlascinema.booking.client.dto.ScreeningClientStatus;
 import com.atlascinema.booking.client.dto.SeatClientResponse;
+import com.atlascinema.booking.config.BookingProperties;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingStatus;
 import com.atlascinema.booking.dto.BookingResponse;
@@ -17,13 +18,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.*;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -45,7 +42,12 @@ class BookingServiceTest {
     @Mock
     private CinemaClient cinemaClient;
 
+    @Mock
+    private RedisSeatHoldService redisSeatHoldService;
+
+
     private Clock clock;
+    private BookingProperties bookingProperties;
 
     private BookingService bookingService;
 
@@ -54,6 +56,8 @@ class BookingServiceTest {
     private UUID seatId;
 
     private LocalDateTime now;
+
+    private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
 
     @BeforeEach
     void setUp() {
@@ -66,10 +70,14 @@ class BookingServiceTest {
 
         now = LocalDateTime.of(2030, 1, 10, 12, 0);
 
+        bookingProperties = new BookingProperties(HOLD_DURATION);
+
         bookingService = new BookingService(
                 bookingRepository,
                 screeningClient,
                 cinemaClient,
+                redisSeatHoldService,
+                bookingProperties,
                 clock);
     }
 
@@ -84,6 +92,13 @@ class BookingServiceTest {
                 .thenReturn(new SeatClientResponse(
                                 seatId,
                                 hallId));
+
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(seatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(true);
 
         when(bookingRepository.saveAndFlush(any(Booking.class)))
                 .thenAnswer(invocation ->
@@ -122,6 +137,13 @@ class BookingServiceTest {
 
         verify(bookingRepository)
                 .saveAndFlush(any(Booking.class));
+
+        verify(redisSeatHoldService)
+                .holdSeat(
+                        eq(screeningId),
+                        eq(seatId),
+                        any(UUID.class),
+                        eq(HOLD_DURATION));
     }
 
     @Test
@@ -132,10 +154,15 @@ class BookingServiceTest {
         when(cinemaClient.getSeat(hallId, seatId))
                 .thenReturn(new SeatClientResponse(seatId, hallId));
 
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(seatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(true);
+
         when(bookingRepository.saveAndFlush(any(Booking.class)))
-                .thenAnswer(invocation ->
-                        invocation.getArgument(0)
-                );
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
         BookingResponse response = bookingService.createBooking(createRequest(List.of(seatId)));
 
@@ -160,6 +187,7 @@ class BookingServiceTest {
                 .hasMessageContaining(screeningId.toString());
 
         verifyNoInteractions(cinemaClient);
+        verifyNoInteractions(redisSeatHoldService);
         verifyNoInteractions(bookingRepository);
     }
 
@@ -180,6 +208,7 @@ class BookingServiceTest {
                 .isInstanceOf(ScreeningUnavailableException.class);
 
         verifyNoInteractions(cinemaClient);
+        verifyNoInteractions(redisSeatHoldService);
         verifyNoInteractions(bookingRepository);
     }
 
@@ -199,6 +228,7 @@ class BookingServiceTest {
                 .isInstanceOf(ScreeningUnavailableException.class);
 
         verifyNoInteractions(cinemaClient);
+        verifyNoInteractions(redisSeatHoldService);
         verifyNoInteractions(bookingRepository);
     }
 
@@ -216,6 +246,10 @@ class BookingServiceTest {
 
         assertThatThrownBy(() -> bookingService.createBooking(createRequest(List.of(seatId))))
                 .isInstanceOf(ScreeningUnavailableException.class);
+
+        verifyNoInteractions(cinemaClient);
+        verifyNoInteractions(redisSeatHoldService);
+        verifyNoInteractions(bookingRepository);
     }
 
     @Test
@@ -234,6 +268,9 @@ class BookingServiceTest {
 
         verify(bookingRepository, never())
                 .saveAndFlush(any(Booking.class));
+
+        // redis must not be touched before all seats are validated
+        verifyNoInteractions(redisSeatHoldService);
     }
 
     @Test
@@ -256,6 +293,13 @@ class BookingServiceTest {
                     new SeatClientResponse(currentSeatId, hallId));
         }
 
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                any(UUID.class),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(true);
+
         when(bookingRepository.saveAndFlush(any(Booking.class)))
                 .thenAnswer(invocation ->
                         invocation.getArgument(0));
@@ -276,27 +320,116 @@ class BookingServiceTest {
         for (UUID currentSeatId : seatIds) {
             verify(cinemaClient)
                     .getSeat(hallId, currentSeatId);
+
+            verify(redisSeatHoldService)
+                    .holdSeat(
+                            eq(screeningId),
+                            eq(currentSeatId),
+                            any(UUID.class),
+                            eq(HOLD_DURATION));
         }
     }
 
     @Test
-    void createBooking_shouldThrowSeatAlreadyReservedException_whenDatabaseConstraintIsViolated() {
+    void createBooking_shouldReleasePreviouslyAcquiredSeats_whenLaterSeatCannotBeAcquired() {
+        UUID secondSeatId = UUID.randomUUID();
+
+        List<UUID> seatIds = List.of(seatId, secondSeatId);
+
+        when(screeningClient.getScreening(screeningId))
+                .thenReturn(createAvailableScreening());
+
+        for (UUID currentSeatId : seatIds) {
+            when(cinemaClient.getSeat(hallId, currentSeatId
+            )).thenReturn(
+                    new SeatClientResponse(currentSeatId, hallId));
+        }
+
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(seatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(true);
+
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(secondSeatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(false);
+
+        assertThatThrownBy(() -> bookingService.createBooking(createRequest(seatIds)))
+                .isInstanceOf(SeatAlreadyReservedException.class);
+
+        // the first hold must be released because the booking cannot be completed
+        verify(redisSeatHoldService)
+                .releaseSeat(
+                        eq(screeningId),
+                        eq(seatId),
+                        any(UUID.class));
+
+        // the second seat was never acquired so there is nothing to release
+        verify(redisSeatHoldService, never())
+                .releaseSeat(
+                        eq(screeningId),
+                        eq(secondSeatId),
+                        any(UUID.class));
+
+        verify(bookingRepository, never()).saveAndFlush(any(Booking.class));
+    }
+
+    @Test
+    void createBooking_shouldThrowSeatAlreadyReservedException_whenRedisHoldCannotBeAcquired() {
         when(screeningClient.getScreening(screeningId))
                 .thenReturn(createAvailableScreening());
 
         when(cinemaClient.getSeat(hallId, seatId))
-                .thenReturn(
-                        new SeatClientResponse(
-                                seatId,
-                                hallId));
+                .thenReturn(new SeatClientResponse(seatId, hallId));
 
-        when(bookingRepository.saveAndFlush(any(Booking.class)))
-                .thenThrow(new DataIntegrityViolationException(
-                                "duplicate key"));
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(seatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(false);
 
         assertThatThrownBy(() -> bookingService.createBooking(createRequest(List.of(seatId))))
                 .isInstanceOf(SeatAlreadyReservedException.class)
                 .hasMessageContaining(screeningId.toString());
+
+        verify(bookingRepository, never())
+                .saveAndFlush(any(Booking.class));
+    }
+
+    @Test
+    void createBooking_shouldReleaseAcquiredSeat_whenDatabaseSaveFails() {
+        when(screeningClient.getScreening(screeningId))
+                .thenReturn(createAvailableScreening());
+
+        when(cinemaClient.getSeat(hallId, seatId))
+                .thenReturn(new SeatClientResponse(seatId, hallId));
+
+        when(redisSeatHoldService.holdSeat(
+                eq(screeningId),
+                eq(seatId),
+                any(UUID.class),
+                eq(HOLD_DURATION)
+        )).thenReturn(true);
+
+        when(bookingRepository.saveAndFlush(any(Booking.class)))
+                .thenThrow(new IllegalStateException("Database unavailable"));
+
+        assertThatThrownBy(() -> bookingService.createBooking(createRequest(List.of(seatId))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Database unavailable");
+
+        // redis is outside the database transaction so the hold must be released manually
+        verify(redisSeatHoldService)
+                .releaseSeat(
+                        eq(screeningId),
+                        eq(seatId),
+                        any(UUID.class));
     }
 
     @Test
@@ -309,10 +442,7 @@ class BookingServiceTest {
 
         LocalDateTime expiresAt = now.plusMinutes(10);
 
-        booking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(seatId, new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -332,8 +462,6 @@ class BookingServiceTest {
 
         assertThat(response.status()).isEqualTo(BookingStatus.CANCELLED);
 
-        assertThat(booking.getHolds()).isEmpty();
-
         assertThat(booking.getSeats()).hasSize(1);
 
         verify(bookingRepository).findById(booking.getId());
@@ -342,6 +470,10 @@ class BookingServiceTest {
 
         verify(bookingRepository, never())
                 .save(any(Booking.class));
+        verify(bookingRepository)
+                .flush();
+
+        verify(redisSeatHoldService).releaseSeat(screeningId, seatId, booking.getId());
     }
 
     @Test
@@ -356,6 +488,9 @@ class BookingServiceTest {
                 .hasMessageContaining(bookingId.toString());
 
         verifyNoInteractions(screeningClient);
+        verifyNoInteractions(redisSeatHoldService);
+
+        verify(bookingRepository, never()).flush();
     }
 
     @Test
@@ -368,10 +503,7 @@ class BookingServiceTest {
 
         LocalDateTime expiresAt = now.plusMinutes(10);
 
-        booking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(seatId, new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -392,7 +524,10 @@ class BookingServiceTest {
 
         assertThat(booking.getStatus()).isEqualTo(BookingStatus.HELD);
 
-        assertThat(booking.getHolds()).hasSize(1);
+        // failed cancellation must not release the Redis hold
+        verifyNoInteractions(redisSeatHoldService);
+
+        verify(bookingRepository, never()).flush();
     }
 
     private CreateBookingRequest createRequest(

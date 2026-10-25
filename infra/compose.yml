@@ -161,11 +161,17 @@ services:
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
 
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
     depends_on:
       discovery-server:
         condition: service_started
 
       booking-db:
+        condition: service_healthy
+
+      redis:
         condition: service_healthy
 
   # api-gateway
@@ -187,6 +193,17 @@ services:
       - cinema-service
       - screening-service
       - booking-service
+
+  # redis
+  redis:
+    image: redis:8.10.2-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   movie-db-data:

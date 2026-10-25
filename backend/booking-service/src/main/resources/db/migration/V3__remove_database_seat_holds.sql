@@ -1,0 +1,1 @@
+DROP TABLE seat_holds;
