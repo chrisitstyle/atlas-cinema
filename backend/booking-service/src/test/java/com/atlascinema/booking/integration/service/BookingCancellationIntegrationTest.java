@@ -10,11 +10,11 @@ import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.integration.AbstractIntegrationTest;
 import com.atlascinema.booking.repository.BookingRepository;
-import com.atlascinema.booking.repository.SeatHoldRepository;
 import com.atlascinema.booking.service.BookingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
@@ -39,7 +39,7 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
     private BookingRepository bookingRepository;
 
     @Autowired
-    private SeatHoldRepository seatHoldRepository;
+    private StringRedisTemplate redisTemplate;
 
     @MockitoBean
     private ScreeningClient screeningClient;
@@ -51,13 +51,12 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
     private Clock clock;
 
     private UUID screeningId;
-    private UUID hallId;
     private UUID seatId;
 
     @BeforeEach
     void setUp() {
         screeningId = UUID.randomUUID();
-        hallId = UUID.randomUUID();
+        UUID hallId = UUID.randomUUID();
         seatId = UUID.randomUUID();
 
         when(clock.instant()).thenReturn(NOW);
@@ -66,11 +65,11 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
         when(screeningClient.getScreening(screeningId))
                 .thenReturn(new ScreeningClientResponse(
-                                screeningId,
-                                hallId,
-                                now().plusHours(2),
-                                new BigDecimal("29.90"),
-                                ScreeningClientStatus.SCHEDULED));
+                        screeningId,
+                        hallId,
+                        now().plusHours(2),
+                        new BigDecimal("29.90"),
+                        ScreeningClientStatus.SCHEDULED));
 
         when(cinemaClient.getSeat(hallId, seatId
         )).thenReturn(new SeatClientResponse(seatId, hallId));
@@ -78,29 +77,36 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void cancelBooking_shouldReleaseSeat_whenBookingIsCancelled() {
+
+        String key = "seat-hold:"
+                + screeningId
+                + ":"
+                + seatId;
+
         CreateBookingRequest firstRequest = new CreateBookingRequest(
-                        UUID.randomUUID(),
-                        "first@example.com",
-                        screeningId,
-                        List.of(seatId));
+                UUID.randomUUID(),
+                "first@example.com",
+                screeningId,
+                List.of(seatId));
 
         BookingResponse firstBooking = bookingService.createBooking(firstRequest);
 
         assertThat(firstBooking.status()).isEqualTo(BookingStatus.HELD);
 
-        assertThat(seatHoldRepository.count()).isEqualTo(1);
-
+        assertThat(redisTemplate.opsForValue().get(key))
+                .isEqualTo(firstBooking.id().toString());
         BookingResponse cancelledBooking = bookingService.cancelBooking(firstBooking.id());
 
         assertThat(cancelledBooking.status()).isEqualTo(BookingStatus.CANCELLED);
 
-        assertThat(seatHoldRepository.count()).isZero();
+        assertThat(redisTemplate.hasKey(key))
+                .isFalse();
 
         CreateBookingRequest secondRequest = new CreateBookingRequest(
-                        UUID.randomUUID(),
-                        "second@example.com",
-                        screeningId,
-                        List.of(seatId));
+                UUID.randomUUID(),
+                "second@example.com",
+                screeningId,
+                List.of(seatId));
 
         BookingResponse secondBooking = bookingService.createBooking(secondRequest);
 
@@ -113,7 +119,8 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
                 .seatId())
                 .isEqualTo(seatId);
 
-        assertThat(seatHoldRepository.count()).isEqualTo(1);
+        assertThat(redisTemplate.opsForValue().get(key))
+                .isEqualTo(secondBooking.id().toString());
 
         assertThat(bookingRepository.count()).isEqualTo(2);
     }

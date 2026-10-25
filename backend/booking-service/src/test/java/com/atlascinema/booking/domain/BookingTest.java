@@ -56,7 +56,6 @@ class BookingTest {
 
         assertThat(booking.getSeats()).isEmpty();
 
-        assertThat(booking.getHolds()).isEmpty();
     }
 
     @Test
@@ -75,15 +74,12 @@ class BookingTest {
     }
 
     @Test
-    void holdSeat_shouldAddBookingSeatAndSeatHold_whenSeatIsNotAlreadyAdded() {
+    void addSeat_shouldAddBookingSeat_whenSeatIsNotAlreadyAdded() {
         Booking booking = createBooking();
 
         UUID seatId = UUID.randomUUID();
 
-        booking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(seatId, new BigDecimal("29.90"));
 
         assertThat(booking.getSeats()).hasSize(1);
 
@@ -94,80 +90,52 @@ class BookingTest {
         assertThat(bookingSeat.getPrice()).isEqualByComparingTo("29.90");
 
         assertThat(bookingSeat.getBooking()).isSameAs(booking);
-
-        assertThat(booking.getHolds()).hasSize(1);
-
-        SeatHold hold = booking.getHolds().getFirst();
-
-        assertThat(hold.getSeatId()).isEqualTo(seatId);
-
-        assertThat(hold.getScreeningId()).isEqualTo(screeningId);
-
-        assertThat(hold.getExpiresAt()).isEqualTo(expiresAt);
-
-        assertThat(hold.getBooking()).isSameAs(booking);
     }
 
     @Test
-    void holdSeat_shouldIncreaseTotalPrice_whenSeatIsAdded() {
+    void addSeat_shouldIncreaseTotalPrice_whenSeatIsAdded() {
         Booking booking = createBooking();
 
-        booking.holdSeat(
-                UUID.randomUUID(),
-                new BigDecimal("29.90"),
-                expiresAt);
+        UUID seatId = UUID.randomUUID();
+        booking.addSeat(seatId, new BigDecimal("29.90"));
 
         assertThat(booking.getTotalPrice()).isEqualByComparingTo("29.90");
     }
 
     @Test
-    void holdSeat_shouldCalculateTotalPrice_whenMultipleSeatsAreAdded() {
+    void addSeat_shouldCalculateTotalPrice_whenMultipleSeatsAreAdded() {
         Booking booking = createBooking();
 
-        booking.holdSeat(
-                UUID.randomUUID(),
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
 
-        booking.holdSeat(
-                UUID.randomUUID(),
-                new BigDecimal("39.90"),
-                expiresAt);
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("39.90"));
 
-        booking.holdSeat(
-                UUID.randomUUID(),
-                new BigDecimal("49.90"),
-                expiresAt);
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("49.90"));
 
         assertThat(booking.getSeats()).hasSize(3);
 
-        assertThat(booking.getHolds()).hasSize(3);
 
         assertThat(booking.getTotalPrice()).isEqualByComparingTo("119.70");
     }
 
     @Test
-    void holdSeat_shouldThrowSeatAlreadyAddedException_whenSeatIsAlreadyAdded() {
+    void addSeat_shouldThrowSeatAlreadyAddedException_whenSeatIsAlreadyAdded() {
         Booking booking = createBooking();
 
         UUID seatId = UUID.randomUUID();
 
-        booking.holdSeat(
+        booking.addSeat(
                 seatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+                new BigDecimal("29.90"));
 
-        assertThatThrownBy(() -> booking.holdSeat(
+        assertThatThrownBy(() -> booking.addSeat(
                         seatId,
-                        new BigDecimal("29.90"),
-                        expiresAt)
+                        new BigDecimal("29.90"))
         )
                 .isInstanceOf(SeatAlreadyAddedException.class)
                 .hasMessageContaining(seatId.toString());
 
         assertThat(booking.getSeats()).hasSize(1);
-
-        assertThat(booking.getHolds()).hasSize(1);
 
         assertThat(booking.getTotalPrice()).isEqualByComparingTo("29.90");
     }
@@ -176,10 +144,9 @@ class BookingTest {
     void markAsHeld_shouldChangeStatusAndExpiresAt_whenSeatsAreHeld() {
         Booking booking = createBooking();
 
-        booking.holdSeat(
+        booking.addSeat(
                 UUID.randomUUID(),
-                new BigDecimal("29.90"),
-                expiresAt);
+                new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -189,15 +156,12 @@ class BookingTest {
     }
 
     @Test
-    void cancel_shouldCancelBookingAndReleaseHolds_whenBookingIsHeldAndScreeningHasNotStarted() {
+    void cancel_shouldCancelBooking_whenBookingIsHeldAndScreeningHasNotStarted() {
         Booking booking = createBooking();
 
         UUID seatId = UUID.randomUUID();
 
-        booking.holdSeat(
-                seatId,
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(seatId, new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -209,8 +173,6 @@ class BookingTest {
 
         assertThat(booking.getStatus()).isEqualTo(BookingStatus.CANCELLED);
 
-        assertThat(booking.getHolds()).isEmpty();
-
         assertThat(booking.getSeats()).hasSize(1);
 
         assertThat(booking.getSeats().getFirst().getSeatId()).isEqualTo(seatId);
@@ -220,9 +182,7 @@ class BookingTest {
     void cancel_shouldThrowBookingCancellationNotAllowedException_whenScreeningHasAlreadyStarted() {
         Booking booking = createBooking();
 
-        booking.holdSeat(UUID.randomUUID(),
-                new BigDecimal("29.90"),
-                expiresAt);
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -234,19 +194,13 @@ class BookingTest {
                 .isInstanceOf(BookingCancellationNotAllowedException.class);
 
         assertThat(booking.getStatus()).isEqualTo(BookingStatus.HELD);
-
-        assertThat(booking.getHolds()).hasSize(1);
     }
 
     @Test
     void cancel_shouldThrowBookingCancellationNotAllowedException_whenScreeningStartsNow() {
         Booking booking = createBooking();
 
-        booking.holdSeat(
-                UUID.randomUUID(),
-                new BigDecimal("29.90"),
-                expiresAt
-        );
+        booking.addSeat(UUID.randomUUID(), new BigDecimal("29.90"));
 
         booking.markAsHeld(expiresAt);
 
@@ -256,9 +210,6 @@ class BookingTest {
                 .isInstanceOf(BookingCancellationNotAllowedException.class);
 
         assertThat(booking.getStatus()).isEqualTo(BookingStatus.HELD);
-
-        assertThat(booking.getHolds())
-                .hasSize(1);
     }
 
     @Test
