@@ -88,6 +88,46 @@ services:
       cinema-db:
         condition: service_healthy
 
+  # screening-service
+
+  screening-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: screening_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5435:5432"
+
+    volumes:
+      - screening-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d screening_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  screening-service:
+    build:
+      context: ../backend/screening-service
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+      DB_URL: jdbc:postgresql://screening-db:5432/screening_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+
+    depends_on:
+      discovery-server:
+        condition: service_started
+      screening-db:
+        condition: service_healthy
+
   # api-gateway
 
   api-gateway:
@@ -105,7 +145,8 @@ services:
       - discovery-server
       - movie-service
       - cinema-service
-
+      - screening-service
 volumes:
   movie-db-data:
   cinema-db-data:
+  screening-db-data:
