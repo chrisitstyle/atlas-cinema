@@ -128,6 +128,46 @@ services:
       screening-db:
         condition: service_healthy
 
+  # booking-service
+  booking-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: booking_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5436:5432"
+
+    volumes:
+      - booking-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d booking_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  booking-service:
+    build:
+      context: ../backend/booking-service
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+      DB_URL: jdbc:postgresql://booking-db:5432/booking_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+
+    depends_on:
+      discovery-server:
+        condition: service_started
+
+      booking-db:
+        condition: service_healthy
+
   # api-gateway
 
   api-gateway:
@@ -146,7 +186,10 @@ services:
       - movie-service
       - cinema-service
       - screening-service
+      - booking-service
+
 volumes:
   movie-db-data:
   cinema-db-data:
   screening-db-data:
+  booking-db-data:
