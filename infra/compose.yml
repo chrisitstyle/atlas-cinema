@@ -164,6 +164,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
 
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
     depends_on:
       discovery-server:
         condition: service_started
@@ -173,6 +175,9 @@ services:
 
       redis:
         condition: service_healthy
+
+      kafka:
+        condition: service_started
 
   # api-gateway
 
@@ -204,6 +209,63 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # kafka
+  # https://github.com/apache/kafka/blob/trunk/docker/examples/docker-compose-files/single-node/plaintext/docker-compose.yml
+  kafka:
+    image: apache/kafka:4.1.2
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # Unique id of this Kafka node in the KRaft cluster
+      KAFKA_NODE_ID: 1
+
+      # This single node acts as both broker and controller
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      # Maps each listener name to its security protocol
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+
+      # Defines where Kafka listens for controller, host and Docker traffic
+      KAFKA_LISTENERS: CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092
+
+      # Tells clients which addresses they should use to connect
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092
+
+      # Listener used for broker-to-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Listener used by the KRaft controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Defines the controller quorum members for KRaft
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      # Single-node setup requires internal topics to use one replica
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      # Avoids waiting before the first consumer group rebalance
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # Allows transaction state to work with a single broker
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Stores transaction state with one replica in this single-node setup
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+      # Uses one replica for the share coordinator internal topic
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+
+      # Allows the share coordinator to work with one broker
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+
+      # Directory where Kafka stores its local log data
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+
+      # Identifies the KRaft cluster
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
 
 volumes:
   movie-db-data:
