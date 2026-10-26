@@ -179,6 +179,18 @@ services:
       kafka:
         condition: service_started
 
+  #notification-service
+  notification-service:
+    build:
+      context: ../backend/notification-service
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+    depends_on:
+      kafka:
+        condition: service_started
+
   # api-gateway
 
   api-gateway:
