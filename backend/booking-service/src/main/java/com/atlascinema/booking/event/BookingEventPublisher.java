@@ -3,7 +3,10 @@ package com.atlascinema.booking.event;
 import com.atlascinema.booking.config.BookingKafkaProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.CompletableFuture;
 
 @Component
 @RequiredArgsConstructor
@@ -12,17 +15,15 @@ public class BookingEventPublisher {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final BookingKafkaProperties kafkaProperties;
 
-    public void publish(
-            BookingCancelledEvent event
+    public CompletableFuture<SendResult<String, Object>> publish(BookingCancelledEvent bookingCancelledEvent
     ) {
         /*
-         * Using bookingId as the key keeps events for the same booking
-         * assigned to the same Kafka partition
+         * The returned future completes only after Kafka reports
+         * whether the message was successfully sent
          */
-        kafkaTemplate.send(
+        return kafkaTemplate.send(
                 kafkaProperties.topic(),
-                event.bookingId().toString(),
-                event
-        );
+                bookingCancelledEvent.bookingId().toString(),
+                bookingCancelledEvent);
     }
 }

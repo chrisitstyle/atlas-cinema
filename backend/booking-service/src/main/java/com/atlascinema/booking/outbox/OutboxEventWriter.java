@@ -11,7 +11,6 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class OutboxEventWriter {
 
-    private static final String BOOKING_CANCELLED = "BookingCancelled";
 
     private final OutboxEventRepository outboxEventRepository;
     private final JsonMapper jsonMapper;
@@ -23,7 +22,7 @@ public class OutboxEventWriter {
         OutboxEvent outboxEvent = OutboxEvent.create(
                         event.eventId(),
                         event.bookingId(),
-                        BOOKING_CANCELLED,
+                        BookingCancelledEvent.TYPE,
                         payload,
                         createdAt);
 
