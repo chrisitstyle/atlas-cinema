@@ -9,8 +9,8 @@ import java.util.Optional;
  */
 public enum BookingEventType {
 
-    // add event types here only when notification-service actually supports them
-    BOOKING_CANCELLED("BookingCancelled");
+    BOOKING_CANCELLED("BookingCancelled"),
+    BOOKING_EXPIRED("BookingExpired");
 
     // exact value used in the Kafka JSON contract
     private final String eventName;
@@ -19,9 +19,7 @@ public enum BookingEventType {
         this.eventName = eventName;
     }
 
-    public String eventName() {
-        return eventName;
-    }
+    public String eventName() {return eventName;}
 
     public static Optional<BookingEventType> fromEventName(
             String bookingEventName
@@ -31,8 +29,7 @@ public enum BookingEventType {
          * before notification-service is updated
          */
         return Arrays.stream(values())
-                .filter(bookingEventType ->
-                        bookingEventType.eventName.equals(bookingEventName))
+                .filter(bookingEventType -> bookingEventType.eventName.equals(bookingEventName))
                 .findFirst();
     }
 }

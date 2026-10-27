@@ -4,6 +4,8 @@ import com.atlascinema.notification.event.BookingCancelledEvent;
 import com.atlascinema.notification.event.BookingCancelledPayload;
 import com.atlascinema.notification.event.BookingEventMessage;
 import com.atlascinema.notification.event.BookingEventType;
+import com.atlascinema.notification.event.BookingExpiredEvent;
+import com.atlascinema.notification.event.BookingExpiredPayload;
 import com.atlascinema.notification.exception.InvalidBookingEventPayloadException;
 import com.atlascinema.notification.exception.UnsupportedBookingEventTypeException;
 import com.atlascinema.notification.processed.ProcessedEventRepository;
@@ -37,15 +39,12 @@ public class BookingEventListener {
             groupId = "${spring.kafka.consumer.group-id}"
     )
     @Transactional
-    public void handleBookingEvent(
-            BookingEventMessage bookingEventMessage
-    ) {
+    public void handleBookingEvent(BookingEventMessage bookingEventMessage) {
         BookingEventType bookingEventType = BookingEventType.fromEventName(bookingEventMessage.eventType())
                         .orElseThrow(() -> new UnsupportedBookingEventTypeException(
-                                bookingEventMessage.eventType()));
+                                        bookingEventMessage.eventType()));
 
-        LocalDateTime processedAt =
-                LocalDateTime.now(clock);
+        LocalDateTime processedAt = LocalDateTime.now(clock);
 
         /*
          * PostgreSQL atomically decides whether this event
@@ -65,25 +64,18 @@ public class BookingEventListener {
 
         switch (bookingEventType) {
             case BOOKING_CANCELLED ->
-                    handleBookingCancelledEvent(
-                            bookingEventMessage);
+                    handleBookingCancelledEvent(bookingEventMessage);
+
+            case BOOKING_EXPIRED -> handleBookingExpiredEvent(bookingEventMessage);
         }
     }
 
-    private void handleBookingCancelledEvent(BookingEventMessage bookingEventMessage) {
-        BookingCancelledPayload bookingCancelledPayload;
-
-        try {
-            bookingCancelledPayload = jsonMapper.convertValue(
-                            bookingEventMessage.payload(),
-                            BookingCancelledPayload.class);
-
-        } catch (IllegalArgumentException exception) {
-            throw new InvalidBookingEventPayloadException(
-                    bookingEventMessage.eventId(),
-                    bookingEventMessage.eventType(),
-                    exception);
-        }
+    private void handleBookingCancelledEvent(
+            BookingEventMessage bookingEventMessage
+    ) {
+        BookingCancelledPayload bookingCancelledPayload = convertBookingEventPayload(
+                        bookingEventMessage,
+                        BookingCancelledPayload.class);
 
         BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
                         bookingEventMessage.eventId(),
@@ -94,5 +86,40 @@ public class BookingEventListener {
                         bookingEventMessage.occurredAt());
 
         notificationService.handleBookingCancelled(bookingCancelledEvent);
+    }
+
+    private void handleBookingExpiredEvent(
+            BookingEventMessage bookingEventMessage
+    ) {
+        BookingExpiredPayload bookingExpiredPayload = convertBookingEventPayload(
+                        bookingEventMessage,
+                        BookingExpiredPayload.class);
+
+        BookingExpiredEvent bookingExpiredEvent = new BookingExpiredEvent(
+                        bookingEventMessage.eventId(),
+                        bookingEventMessage.bookingId(),
+                        bookingExpiredPayload.customerId(),
+                        bookingExpiredPayload.contactEmail(),
+                        bookingExpiredPayload.screeningId(),
+                        bookingEventMessage.occurredAt());
+
+        notificationService.handleBookingExpired(bookingExpiredEvent);
+    }
+
+    private <T> T convertBookingEventPayload(
+            BookingEventMessage bookingEventMessage,
+            Class<T> payloadType
+    ) {
+        try {
+            return jsonMapper.convertValue(
+                    bookingEventMessage.payload(),
+                    payloadType);
+
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidBookingEventPayloadException(
+                    bookingEventMessage.eventId(),
+                    bookingEventMessage.eventType(),
+                    exception);
+        }
     }
 }
