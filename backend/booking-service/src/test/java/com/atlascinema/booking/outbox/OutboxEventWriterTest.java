@@ -69,7 +69,7 @@ class OutboxEventWriterTest {
         when(jsonMapper.writeValueAsString(any(BookingEventMessage.class))
         ).thenReturn(serializedBookingEventMessage);
 
-        outboxEventWriter.save(bookingCancelledEvent, CREATED_AT);
+        outboxEventWriter.saveCancelled(bookingCancelledEvent, CREATED_AT);
 
         ArgumentCaptor<BookingCancelledPayload> bookingCancelledPayloadCaptor = ArgumentCaptor.forClass(BookingCancelledPayload.class);
 

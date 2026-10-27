@@ -487,7 +487,7 @@ class BookingServiceTest {
                         BookingCancelledEvent.class);
 
         verify(outboxEventWriter)
-                .save(eventCaptor.capture(), eq(now));
+                .saveCancelled(eventCaptor.capture(), eq(now));
 
         BookingCancelledEvent event = eventCaptor.getValue();
 

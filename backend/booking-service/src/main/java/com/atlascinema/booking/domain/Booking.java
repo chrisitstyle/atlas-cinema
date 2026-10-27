@@ -132,4 +132,12 @@ public class Booking {
 
         status = BookingStatus.CANCELLED;
     }
+
+    public void markAsExpired() {
+        if (status != BookingStatus.HELD) {
+            throw new IllegalStateException("Only held booking can be marked as expired");
+        }
+
+        status = BookingStatus.EXPIRED;
+    }
 }
