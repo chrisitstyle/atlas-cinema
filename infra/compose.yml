@@ -180,14 +180,40 @@ services:
         condition: service_started
 
   #notification-service
+  notification-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5437:5432"
+
+    volumes:
+      - notification-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d notification_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   notification-service:
     build:
       context: ../backend/notification-service
 
     environment:
+      DB_URL: jdbc:postgresql://notification-db:5432/notification_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
 
     depends_on:
+      notification-db:
+        condition: service_healthy
       kafka:
         condition: service_started
 
@@ -284,3 +310,4 @@ volumes:
   cinema-db-data:
   screening-db-data:
   booking-db-data:
+  notification-db-data:
