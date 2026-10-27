@@ -9,11 +9,13 @@ import com.atlascinema.booking.domain.BookingSeat;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.domain.Booking;
+import com.atlascinema.booking.event.BookingCancelledEvent;
 import com.atlascinema.booking.exception.BookingNotFoundException;
 import com.atlascinema.booking.exception.ScreeningNotFoundException;
 import com.atlascinema.booking.exception.ScreeningUnavailableException;
 import com.atlascinema.booking.exception.SeatAlreadyReservedException;
 import com.atlascinema.booking.exception.SeatNotFoundException;
+import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.repository.BookingRepository;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +42,7 @@ public class BookingService {
     private final RedisSeatHoldService redisSeatHoldService;
     private final BookingProperties bookingProperties;
     private final Clock clock;
+    private final OutboxEventWriter outboxEventWriter;
 
     @Transactional
     public BookingResponse createBooking(
@@ -120,9 +124,23 @@ public class BookingService {
 
         ScreeningClientResponse screening = getScreening(booking.getScreeningId());
 
-        LocalDateTime now = LocalDateTime.now(clock);
+        // the same moment in whole transaction
+        Instant occurredAt = clock.instant();
+
+        LocalDateTime now = LocalDateTime.ofInstant(occurredAt,clock.getZone());
 
         booking.cancel(now, screening.startsAt());
+
+        BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
+                UUID.randomUUID(),
+                booking.getId(),
+                booking.getCustomerId(),
+                booking.getContactEmail(),
+                booking.getScreeningId(),
+                occurredAt);
+
+        // store the event in the same database transaction as the booking change
+        outboxEventWriter.save(bookingCancelledEvent, now);
 
         /*
          * flush the database change before releasing Redis holds

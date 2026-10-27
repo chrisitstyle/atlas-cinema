@@ -1,16 +1,15 @@
 package com.atlascinema.booking.integration.redis;
 
+import com.atlascinema.booking.integration.AbstractIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-class RedisConnectionIntegrationTest {
+class RedisConnectionIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private StringRedisTemplate redisTemplate;

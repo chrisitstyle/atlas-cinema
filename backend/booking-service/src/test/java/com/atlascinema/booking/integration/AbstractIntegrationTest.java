@@ -8,10 +8,7 @@ import org.springframework.test.context.jdbc.Sql;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@Sql(
-        scripts = "/clear-database.sql",
-        executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD
-)
-public abstract class AbstractIntegrationTest
-        extends BaseTestEnvironment {
+@Sql(scripts = "/clear-database.sql",
+        executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
+public abstract class AbstractIntegrationTest extends BaseTestEnvironment {
 }

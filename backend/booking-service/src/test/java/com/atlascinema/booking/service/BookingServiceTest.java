@@ -10,12 +10,15 @@ import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingStatus;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
+import com.atlascinema.booking.event.BookingCancelledEvent;
 import com.atlascinema.booking.exception.*;
+import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.repository.BookingRepository;
 import feign.FeignException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -45,6 +48,9 @@ class BookingServiceTest {
     @Mock
     private RedisSeatHoldService redisSeatHoldService;
 
+    @Mock
+    private OutboxEventWriter outboxEventWriter;
+
 
     private Clock clock;
     private BookingProperties bookingProperties;
@@ -58,6 +64,7 @@ class BookingServiceTest {
     private LocalDateTime now;
 
     private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
+    private static final Instant NOW = Instant.parse("2030-01-10T12:00:00Z");
 
     @BeforeEach
     void setUp() {
@@ -73,12 +80,13 @@ class BookingServiceTest {
         bookingProperties = new BookingProperties(HOLD_DURATION);
 
         bookingService = new BookingService(
-                bookingRepository,
-                screeningClient,
-                cinemaClient,
-                redisSeatHoldService,
-                bookingProperties,
-                clock);
+                        bookingRepository,
+                        screeningClient,
+                        cinemaClient,
+                        redisSeatHoldService,
+                        bookingProperties,
+                        clock,
+                        outboxEventWriter);
     }
 
     @Test
@@ -474,6 +482,31 @@ class BookingServiceTest {
                 .flush();
 
         verify(redisSeatHoldService).releaseSeat(screeningId, seatId, booking.getId());
+
+        ArgumentCaptor<BookingCancelledEvent> eventCaptor = ArgumentCaptor.forClass(
+                        BookingCancelledEvent.class);
+
+        verify(outboxEventWriter)
+                .save(eventCaptor.capture(), eq(now));
+
+        BookingCancelledEvent event = eventCaptor.getValue();
+
+        assertThat(event.eventId())
+                .isNotNull();
+
+        assertThat(event.bookingId())
+                .isEqualTo(booking.getId());
+
+        assertThat(event.customerId())
+                .isEqualTo(booking.getCustomerId());
+
+        assertThat(event.contactEmail())
+                .isEqualTo(booking.getContactEmail());
+
+        assertThat(event.screeningId())
+                .isEqualTo(screeningId);
+
+        assertThat(event.occurredAt()).isEqualTo(NOW);
     }
 
     @Test
@@ -491,6 +524,7 @@ class BookingServiceTest {
         verifyNoInteractions(redisSeatHoldService);
 
         verify(bookingRepository, never()).flush();
+        verifyNoInteractions(outboxEventWriter);
     }
 
     @Test
@@ -527,6 +561,7 @@ class BookingServiceTest {
         // failed cancellation must not release the Redis hold
         verifyNoInteractions(redisSeatHoldService);
 
+        verifyNoInteractions(outboxEventWriter);
         verify(bookingRepository, never()).flush();
     }
 

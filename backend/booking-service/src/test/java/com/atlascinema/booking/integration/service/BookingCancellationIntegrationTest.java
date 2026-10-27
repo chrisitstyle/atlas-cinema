@@ -9,6 +9,8 @@ import com.atlascinema.booking.domain.BookingStatus;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.integration.AbstractIntegrationTest;
+import com.atlascinema.booking.outbox.OutboxEvent;
+import com.atlascinema.booking.outbox.OutboxEventRepository;
 import com.atlascinema.booking.repository.BookingRepository;
 import com.atlascinema.booking.service.BookingService;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +49,9 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
     @MockitoBean
     private CinemaClient cinemaClient;
 
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
     @MockitoBean
     private Clock clock;
 
@@ -76,7 +81,7 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void cancelBooking_shouldReleaseSeat_whenBookingIsCancelled() {
+    void cancelBooking_shouldReleaseSeatAndCreateOutboxEvent_whenBookingIsCancelled() {
 
         String key = "seat-hold:"
                 + screeningId
@@ -93,14 +98,29 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(firstBooking.status()).isEqualTo(BookingStatus.HELD);
 
-        assertThat(redisTemplate.opsForValue().get(key))
-                .isEqualTo(firstBooking.id().toString());
-        BookingResponse cancelledBooking = bookingService.cancelBooking(firstBooking.id());
+        assertThat(redisTemplate.opsForValue().get(key)).isEqualTo(firstBooking.id().toString());
+
+        BookingResponse cancelledBooking =
+                bookingService.cancelBooking(firstBooking.id());
 
         assertThat(cancelledBooking.status()).isEqualTo(BookingStatus.CANCELLED);
 
         assertThat(redisTemplate.hasKey(key))
                 .isFalse();
+
+        List<OutboxEvent> outboxEvents = outboxEventRepository.findAll();
+
+        assertThat(outboxEvents).hasSize(1);
+
+        OutboxEvent outboxEvent = outboxEvents.getFirst();
+
+        assertThat(outboxEvent.getAggregateId()).isEqualTo(firstBooking.id());
+
+        assertThat(outboxEvent.getEventType()).isEqualTo("BookingCancelled");
+
+        assertThat(outboxEvent.getPublishedAt()).isNull();
+
+        assertThat(outboxEvent.getPayload()).contains(firstBooking.id().toString());
 
         CreateBookingRequest secondRequest = new CreateBookingRequest(
                 UUID.randomUUID(),

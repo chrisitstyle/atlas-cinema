@@ -42,6 +42,8 @@ dependencies {
 	implementation 'org.springframework.cloud:spring-cloud-starter-netflix-eureka-client'
 	implementation 'org.springframework.cloud:spring-cloud-starter-openfeign'
 	implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+	implementation 'org.springframework.boot:spring-boot-starter-kafka'
+
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'
@@ -53,6 +55,7 @@ dependencies {
 	testImplementation 'org.assertj:assertj-core:3.27.7'
 	testImplementation 'org.mockito:mockito-core:5.23.0'
 	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+	testImplementation 'org.testcontainers:testcontainers-kafka'
 	testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
 	testImplementation 'org.testcontainers:testcontainers-postgresql:2.0.5'
 

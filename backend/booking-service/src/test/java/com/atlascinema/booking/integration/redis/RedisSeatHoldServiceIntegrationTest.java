@@ -1,25 +1,20 @@
 package com.atlascinema.booking.integration.redis;
 
+import com.atlascinema.booking.integration.AbstractIntegrationTest;
 import com.atlascinema.booking.service.RedisSeatHoldService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.UUID;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.UUID;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-class RedisSeatHoldServiceIntegrationTest {
+class RedisSeatHoldServiceIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private RedisSeatHoldService redisSeatHoldService;
