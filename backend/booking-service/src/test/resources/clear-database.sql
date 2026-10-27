@@ -1,4 +1,5 @@
 TRUNCATE TABLE
     booking_seats,
-    bookings
+    bookings,
+    outbox_events
 RESTART IDENTITY CASCADE;

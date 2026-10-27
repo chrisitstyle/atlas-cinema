@@ -1,11 +1,10 @@
 package com.atlascinema.booking.outbox;
 
-import com.atlascinema.booking.event.BookingCancelledEvent;
+import com.atlascinema.booking.event.BookingEventMessage;
 import com.atlascinema.booking.event.BookingEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
@@ -38,43 +37,48 @@ public class OutboxPublisher {
 
     @Scheduled(fixedDelayString = "${booking.outbox.publish-interval:1s}")
     public void publishPendingEvents() {
-        List<OutboxEvent> events = outboxEventRepository
+        List<OutboxEvent> pendingOutboxEvents = outboxEventRepository
                         .findTop100ByPublishedAtIsNullOrderByCreatedAtAsc();
 
-        for (OutboxEvent outboxEvent : events) {
-            boolean published = publish(outboxEvent);
+        for (OutboxEvent outboxEvent : pendingOutboxEvents) {
+            boolean publishedSuccessfully = publishOutboxEvent(outboxEvent);
 
             /*
              * Stop the batch after a failure so newer events
              * are not published before an older event
              */
-            if (!published) {
+            if (!publishedSuccessfully) {
                 break;
             }
         }
     }
 
-    private boolean publish(
+    private boolean publishOutboxEvent(
             OutboxEvent outboxEvent
     ) {
         try {
-            BookingCancelledEvent bookingCancelledEvent = deserialize(outboxEvent);
+            BookingEventMessage bookingEventMessage = deserializeBookingEventMessage(outboxEvent);
 
             /*
              * Wait for Kafka acknowledgement before marking
              * the outbox event as published
              */
             bookingEventPublisher
-                    .publish(bookingCancelledEvent)
-                    .get(KAFKA_ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                    .publish(bookingEventMessage)
+                    .get(KAFKA_ACK_TIMEOUT.toMillis(),
+                            TimeUnit.MILLISECONDS);
 
-            outboxEvent.markAsPublished(LocalDateTime.now(clock));
+            outboxEvent.markAsPublished(
+                    LocalDateTime.now(clock)
+            );
 
             /*
              * The entity may be detached because the repository read
              * finished before the Kafka call
              */
-            outboxEventRepository.saveAndFlush(outboxEvent);
+            outboxEventRepository.saveAndFlush(
+                    outboxEvent
+            );
 
             return true;
 
@@ -85,15 +89,16 @@ public class OutboxPublisher {
              */
             Thread.currentThread().interrupt();
 
-            log.error("Outbox publishing interrupted for event {}",
+            log.error("Outbox event publishing interrupted for event {}",
                     outboxEvent.getId(),
                     exception);
 
             return false;
 
         } catch (ExecutionException
-                | TimeoutException
-                | JacksonException exception) {
+                 | TimeoutException
+                 | JacksonException exception) {
+
             log.error("Failed to publish outbox event {}",
                     outboxEvent.getId(),
                     exception);
@@ -102,18 +107,12 @@ public class OutboxPublisher {
         }
     }
 
-    private BookingCancelledEvent deserialize(
-            OutboxEvent outboxEvent
-    ) throws JacksonException {
+    private BookingEventMessage deserializeBookingEventMessage(
+            OutboxEvent outboxEvent) throws JacksonException {
 
-        if (!BookingCancelledEvent.TYPE.equals(
-                outboxEvent.getEventType()
-        )) {
-            throw new IllegalStateException(
-                    "Unsupported outbox event type: "
-                            + outboxEvent.getEventType());
-        }
-
-        return jsonMapper.readValue(outboxEvent.getPayload(), BookingCancelledEvent.class);
+        return jsonMapper.readValue(
+                outboxEvent.getPayload(),
+                BookingEventMessage.class
+        );
     }
 }

@@ -19,8 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DataJpaTest
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-class OutboxEventRepositoryIntegrationTest
-        extends BaseTestEnvironment {
+class OutboxEventRepositoryIntegrationTest extends BaseTestEnvironment {
 
     @Autowired
     private OutboxEventRepository outboxEventRepository;

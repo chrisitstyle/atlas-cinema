@@ -15,7 +15,8 @@ public class BookingEventPublisher {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final BookingKafkaProperties kafkaProperties;
 
-    public CompletableFuture<SendResult<String, Object>> publish(BookingCancelledEvent bookingCancelledEvent
+    public CompletableFuture<SendResult<String, Object>> publish(
+            BookingEventMessage bookingEventMessage
     ) {
         /*
          * The returned future completes only after Kafka reports
@@ -23,7 +24,7 @@ public class BookingEventPublisher {
          */
         return kafkaTemplate.send(
                 kafkaProperties.topic(),
-                bookingCancelledEvent.bookingId().toString(),
-                bookingCancelledEvent);
+                bookingEventMessage.bookingId().toString(),
+                bookingEventMessage);
     }
 }

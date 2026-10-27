@@ -1,15 +1,18 @@
 package com.atlascinema.booking.integration.outbox;
 
 import com.atlascinema.booking.event.BookingCancelledEvent;
+import com.atlascinema.booking.event.BookingCancelledPayload;
+import com.atlascinema.booking.event.BookingEventMessage;
 import com.atlascinema.booking.event.BookingEventPublisher;
+import com.atlascinema.booking.event.BookingEventType;
 import com.atlascinema.booking.integration.AbstractIntegrationTest;
 import com.atlascinema.booking.outbox.OutboxEvent;
 import com.atlascinema.booking.outbox.OutboxEventRepository;
 import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.outbox.OutboxPublisher;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,7 +68,7 @@ class OutboxPublisherIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void publishPendingEvents_shouldPublishEventToKafkaAndMarkItAsPublished() {
+    void publishPendingEvents_shouldPublishBookingEventMessageToKafkaAndMarkOutboxEventAsPublished() {
         UUID eventId = UUID.randomUUID();
         UUID bookingId = UUID.randomUUID();
         UUID screeningId = UUID.randomUUID();
@@ -82,88 +85,103 @@ class OutboxPublisherIntegrationTest extends AbstractIntegrationTest {
 
         outboxEventWriter.save(bookingCancelledEvent, createdAt);
 
-        OutboxEvent beforePublishing = outboxEventRepository
+        OutboxEvent outboxEventBeforePublishing = outboxEventRepository
                         .findById(eventId)
                         .orElseThrow();
 
-        assertThat(beforePublishing.getPublishedAt())
-                .isNull();
+        assertThat(outboxEventBeforePublishing.getPublishedAt()
+        ).isNull();
 
         /*
-         * This performs a real Kafka send and waits for the broker acknowledgement
+         * This performs a real Kafka send and waits
+         * for the broker acknowledgement
          */
         outboxPublisher.publishPendingEvents();
 
-        OutboxEvent afterPublishing = outboxEventRepository
+        OutboxEvent outboxEventAfterPublishing = outboxEventRepository
                         .findById(eventId)
                         .orElseThrow();
 
-        assertThat(afterPublishing.getPublishedAt()).isEqualTo(createdAt);
+        assertThat(outboxEventAfterPublishing.getPublishedAt()
+        ).isEqualTo(createdAt);
 
-        BookingCancelledEvent receivedBookingCancelledEvent = consumeEvent(eventId);
+        BookingEventMessage receivedBookingEventMessage = consumeBookingEventMessage(eventId);
 
-        assertThat(receivedBookingCancelledEvent.eventId()).isEqualTo(eventId);
+        assertThat(receivedBookingEventMessage.eventId()).isEqualTo(eventId);
 
-        assertThat(receivedBookingCancelledEvent.bookingId()).isEqualTo(bookingId);
+        assertThat(receivedBookingEventMessage.eventType())
+                .isEqualTo(BookingEventType.BOOKING_CANCELLED.eventName());
 
-        assertThat(receivedBookingCancelledEvent.contactEmail()).isEqualTo("guest@example.com");
+        assertThat(receivedBookingEventMessage.bookingId()
+        ).isEqualTo(bookingId);
 
-        assertThat(receivedBookingCancelledEvent.screeningId()).isEqualTo(screeningId);
+        assertThat(receivedBookingEventMessage.occurredAt()).isEqualTo(NOW);
 
-        assertThat(receivedBookingCancelledEvent.occurredAt()).isEqualTo(NOW);
+        BookingCancelledPayload receivedBookingCancelledPayload = jsonMapper.convertValue(
+                        receivedBookingEventMessage.payload(),
+                        BookingCancelledPayload.class
+        );
+
+        assertThat(receivedBookingCancelledPayload.customerId()).isNull();
+
+        assertThat(receivedBookingCancelledPayload.contactEmail()).isEqualTo("guest@example.com");
+
+        assertThat(receivedBookingCancelledPayload.screeningId()).isEqualTo(screeningId);
     }
 
-    private BookingCancelledEvent consumeEvent(
+    private BookingEventMessage consumeBookingEventMessage(
             UUID expectedEventId
     ) {
-        Properties properties = new Properties();
+        Properties consumerProperties = new Properties();
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
                 KAFKA.getBootstrapServers());
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.GROUP_ID_CONFIG,
                 "outbox-publisher-test-" + UUID.randomUUID());
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                 "earliest");
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
                 StringDeserializer.class);
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
                 StringDeserializer.class);
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
+        try (KafkaConsumer<String, String> kafkaConsumer = new KafkaConsumer<>(consumerProperties)) {
 
-            consumer.subscribe(List.of(TOPIC));
+            kafkaConsumer.subscribe(List.of(TOPIC));
 
-            Instant deadline = Instant.now()
-                            .plusSeconds(5);
+            Instant pollingDeadline = Instant.now().plusSeconds(5);
 
-            while (Instant.now().isBefore(deadline)) {
-                for (ConsumerRecord<String, String> record :
-                        consumer.poll(Duration.ofMillis(250))) {
+            while (Instant.now().isBefore(pollingDeadline)) {
+                for (ConsumerRecord<String, String> kafkaRecord :
+                        kafkaConsumer.poll(Duration.ofMillis(250))) {
 
-                    BookingCancelledEvent bookingCancelledEvent = jsonMapper.readValue(
-                                    record.value(),
-                                    BookingCancelledEvent.class);
+                    BookingEventMessage bookingEventMessage = jsonMapper.readValue(
+                                    kafkaRecord.value(),
+                                    BookingEventMessage.class);
 
                     /*
-                     * Other integration tests may have already written to this topic
-                     * so wait specifically for the event created by this test
+                     * Other integration tests may have already written
+                     * to this topic so wait for this exact event
                      */
-                    if (bookingCancelledEvent.eventId().equals(expectedEventId)) {
-                        return bookingCancelledEvent;
+                    if (bookingEventMessage.eventId()
+                            .equals(expectedEventId)) {
+
+                        return bookingEventMessage;
                     }
                 }
             }
 
-            throw new AssertionError("Kafka did not receive event " + expectedEventId);
+            throw new AssertionError("Kafka did not receive booking event "
+                            + expectedEventId);
         }
     }
 }

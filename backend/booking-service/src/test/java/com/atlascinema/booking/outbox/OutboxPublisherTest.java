@@ -1,13 +1,15 @@
 package com.atlascinema.booking.outbox;
 
-import com.atlascinema.booking.event.BookingCancelledEvent;
+import com.atlascinema.booking.event.BookingEventMessage;
 import com.atlascinema.booking.event.BookingEventPublisher;
+import com.atlascinema.booking.event.BookingEventType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.support.SendResult;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
@@ -19,12 +21,17 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class OutboxPublisherTest {
 
     private static final Instant NOW = Instant.parse("2030-01-10T12:00:00Z");
+
+    private static final LocalDateTime CREATED_AT = LocalDateTime.of(2030, 1, 10, 11, 59);
 
     @Mock
     private OutboxEventRepository outboxEventRepository;
@@ -36,7 +43,6 @@ class OutboxPublisherTest {
     private JsonMapper jsonMapper;
 
     private Clock clock;
-
     private OutboxPublisher outboxPublisher;
 
     @BeforeEach
@@ -51,90 +57,87 @@ class OutboxPublisherTest {
     }
 
     @Test
-    void publishPendingEvents_shouldMarkEventAsPublished_whenKafkaAcknowledgesMessage()
+    void publishPendingEvents_shouldMarkOutboxEventAsPublished_whenKafkaAcknowledgesMessage()
             throws Exception {
 
         UUID eventId = UUID.randomUUID();
         UUID bookingId = UUID.randomUUID();
 
-        String payload = "{}";
+        String serializedMessage = "{}";
 
         OutboxEvent outboxEvent = OutboxEvent.create(
                         eventId,
                         bookingId,
-                        BookingCancelledEvent.TYPE,
-                        payload,
-                        LocalDateTime.of(2030, 1, 10, 11, 59));
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
+                        serializedMessage,
+                        CREATED_AT);
 
-        BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
                         eventId,
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
                         bookingId,
-                        null,
-                        "guest@example.com",
-                        UUID.randomUUID(),
-                        NOW);
+                        NOW,
+                        mock(JsonNode.class));
 
-        when(outboxEventRepository
-                .findTop100ByPublishedAtIsNullOrderByCreatedAtAsc())
-                .thenReturn(List.of(outboxEvent));
+        when(outboxEventRepository.findTop100ByPublishedAtIsNullOrderByCreatedAtAsc()
+        ).thenReturn(List.of(outboxEvent));
 
-        when(jsonMapper.readValue(
-                payload,
-                BookingCancelledEvent.class
-        )).thenReturn(bookingCancelledEvent);
+        when(jsonMapper.readValue(serializedMessage, BookingEventMessage.class))
+                .thenReturn(bookingEventMessage);
 
-        CompletableFuture<SendResult<String, Object>> future = CompletableFuture.completedFuture(mock(SendResult.class));
+        CompletableFuture<SendResult<String, Object>> kafkaAcknowledgementFuture = CompletableFuture
+                .completedFuture(mock(SendResult.class));
 
-        when(bookingEventPublisher.publish(bookingCancelledEvent))
-                .thenReturn(future);
+        when(bookingEventPublisher.publish(bookingEventMessage)
+        ).thenReturn(kafkaAcknowledgementFuture);
 
         outboxPublisher.publishPendingEvents();
 
-        assertThat(outboxEvent.getPublishedAt()).isEqualTo(
-                        LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+        assertThat(outboxEvent.getPublishedAt())
+                .isEqualTo(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
 
         verify(outboxEventRepository).saveAndFlush(outboxEvent);
     }
 
     @Test
-    void publishPendingEvents_shouldKeepEventUnpublished_whenKafkaPublishingFails() throws Exception {
+    void publishPendingEvents_shouldKeepOutboxEventUnpublished_whenKafkaPublishingFails() throws Exception {
 
         UUID eventId = UUID.randomUUID();
         UUID bookingId = UUID.randomUUID();
 
-        String payload = "{}";
+        String serializedMessage = "{}";
 
         OutboxEvent outboxEvent = OutboxEvent.create(
                         eventId,
                         bookingId,
-                        BookingCancelledEvent.TYPE,
-                        payload,
-                        LocalDateTime.of(2030, 1, 10, 11, 59));
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
+                        serializedMessage,
+                        CREATED_AT);
 
-        BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
                         eventId,
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
                         bookingId,
-                        null,
-                        "guest@example.com",
-                        UUID.randomUUID(),
-                        NOW);
+                        NOW,
+                        mock(JsonNode.class));
 
         when(outboxEventRepository
-                .findTop100ByPublishedAtIsNullOrderByCreatedAtAsc())
+                        .findTop100ByPublishedAtIsNullOrderByCreatedAtAsc())
                 .thenReturn(List.of(outboxEvent));
 
-        when(jsonMapper.readValue(payload, BookingCancelledEvent.class
-        )).thenReturn(bookingCancelledEvent);
+        when(jsonMapper.readValue(serializedMessage, BookingEventMessage.class)).thenReturn(bookingEventMessage);
 
-        CompletableFuture<SendResult<String, Object>> future = CompletableFuture.failedFuture(
+        CompletableFuture<SendResult<String, Object>>
+                failedKafkaPublishingFuture = CompletableFuture.failedFuture(
                         new RuntimeException("Kafka unavailable"));
 
-        when(bookingEventPublisher.publish(bookingCancelledEvent)).thenReturn(future);
+        when(bookingEventPublisher.publish(bookingEventMessage)).thenReturn(failedKafkaPublishingFuture);
 
         outboxPublisher.publishPendingEvents();
 
         assertThat(outboxEvent.getPublishedAt()).isNull();
 
-        verify(outboxEventRepository, never()).saveAndFlush(outboxEvent);
+        verify(outboxEventRepository, never()
+        ).saveAndFlush(outboxEvent);
     }
 }

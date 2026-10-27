@@ -21,5 +21,4 @@ public record BookingCancelledEvent(
         UUID screeningId,
         Instant occurredAt
 ) {
-    public static final String TYPE = "BookingCancelled";
 }

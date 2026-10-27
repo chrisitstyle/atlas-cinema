@@ -7,14 +7,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.core.KafkaTemplate;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.UUID;
 
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class BookingEventPublisherTest {
+
+    private static final Instant OCCURRED_AT = Instant.parse("2030-01-10T12:00:00Z");
 
     @Mock
     private KafkaTemplate<String, Object> kafkaTemplate;
@@ -25,30 +29,31 @@ class BookingEventPublisherTest {
     void setUp() {
         BookingKafkaProperties kafkaProperties = new BookingKafkaProperties("booking-events");
 
-        bookingEventPublisher = new BookingEventPublisher(kafkaTemplate, kafkaProperties);
+        bookingEventPublisher = new BookingEventPublisher(
+                        kafkaTemplate,
+                        kafkaProperties);
     }
 
     @Test
-    void publish_shouldSendEventToBookingTopic_whenBookingIsCancelled() {
+    void publish_shouldSendBookingEventMessageToConfiguredTopic_whenPublishingMessage() {
         UUID bookingId = UUID.randomUUID();
 
-        BookingCancelledEvent event = new BookingCancelledEvent(
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
                         UUID.randomUUID(),
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
                         bookingId,
-                        UUID.randomUUID(),
-                        "john@example.com",
-                        UUID.randomUUID(),
-                        Instant.parse("2030-01-10T12:00:00Z"));
+                        OCCURRED_AT,
+                        mock(JsonNode.class));
 
-        bookingEventPublisher.publish(event);
+        bookingEventPublisher.publish(bookingEventMessage);
 
         /*
-         * bookingId is used as the Kafka key so events for the same booking
-         * stay assigned to the same partition
+         * bookingId is used as the Kafka key so all events
+         * for the same booking stay assigned to the same partition
          */
         verify(kafkaTemplate).send(
-                        "booking-events",
-                        bookingId.toString(),
-                        event);
+                "booking-events",
+                bookingId.toString(),
+                bookingEventMessage);
     }
 }
