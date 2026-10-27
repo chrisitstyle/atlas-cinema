@@ -217,6 +217,47 @@ services:
       kafka:
         condition: service_started
 
+  # payment-service
+  # payment-service
+
+  payment-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+
+    ports:
+      - "5438:5432"
+
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d payment_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  payment-service:
+    build:
+      context: ../backend/payment-service
+
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP: "true"
+
+      DB_URL: jdbc:postgresql://payment-db:5432/payment_db
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+
+    depends_on:
+      discovery-server:
+        condition: service_started
+      payment-db:
+        condition: service_healthy
+
   # api-gateway
 
   api-gateway:
@@ -311,3 +352,4 @@ volumes:
   screening-db-data:
   booking-db-data:
   notification-db-data:
+  payment-db-data:
