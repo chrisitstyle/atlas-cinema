@@ -13,6 +13,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -43,11 +44,11 @@ import static org.mockito.Mockito.verify;
 @Import(BookingEventRetryIntegrationTest.KafkaTopicsConfiguration.class)
 class BookingEventRetryIntegrationTest extends AbstractIntegrationTest {
 
-    private static final Instant NOW =
-            Instant.parse("2030-01-10T12:00:00Z");
+    private static final Instant NOW = Instant.parse("2030-01-10T12:00:00Z");
 
     @Autowired
-    private KafkaTemplate<Object, Object> kafkaTemplate;
+    @Qualifier("dltKafkaTemplate")
+    private KafkaTemplate<String, Object> dltKafkaTemplate;
 
     @Autowired
     private ProcessedEventRepository processedEventRepository;
@@ -92,7 +93,7 @@ class BookingEventRetryIntegrationTest extends AbstractIntegrationTest {
          * Send a real event through Kafka instead of calling
          * the listener directly
          */
-        kafkaTemplate.send(
+        dltKafkaTemplate.send(
                         kafkaProperties.bookingEventsTopic(),
                         bookingCancelledEvent.bookingId().toString(),
                         bookingCancelledEvent).get(5, TimeUnit.SECONDS);
