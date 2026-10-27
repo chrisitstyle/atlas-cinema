@@ -4,6 +4,8 @@ import com.atlascinema.notification.event.BookingCancelledEvent;
 import com.atlascinema.notification.event.BookingCancelledPayload;
 import com.atlascinema.notification.event.BookingEventMessage;
 import com.atlascinema.notification.event.BookingEventType;
+import com.atlascinema.notification.event.BookingExpiredEvent;
+import com.atlascinema.notification.event.BookingExpiredPayload;
 import com.atlascinema.notification.processed.ProcessedEventRepository;
 import com.atlascinema.notification.service.NotificationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,8 +29,7 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class BookingEventListenerTest {
 
-    private static final Instant NOW =
-            Instant.parse("2030-01-10T12:00:00Z");
+    private static final Instant NOW = Instant.parse("2030-01-10T12:00:00Z");
 
     @Mock
     private ProcessedEventRepository processedEventRepository;
@@ -41,6 +42,9 @@ class BookingEventListenerTest {
 
     @Mock
     private JsonNode bookingCancelledPayloadNode;
+
+    @Mock
+    private JsonNode bookingExpiredPayloadNode;
 
     private BookingEventListener bookingEventListener;
 
@@ -84,8 +88,7 @@ class BookingEventListenerTest {
 
         LocalDateTime processedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
 
-        when(processedEventRepository.insertIfAbsent(
-                        eventId,
+        when(processedEventRepository.insertIfAbsent(eventId,
                         BookingEventType.BOOKING_CANCELLED.eventName(),
                         processedAt)
         ).thenReturn(1);
@@ -97,7 +100,53 @@ class BookingEventListenerTest {
 
         bookingEventListener.handleBookingEvent(bookingEventMessage);
 
-        verify(notificationService).handleBookingCancelled(expectedBookingCancelledEvent);
+        verify(notificationService).handleBookingCancelled(
+                        expectedBookingCancelledEvent);
+    }
+
+    @Test
+    void handleBookingEvent_shouldHandleBookingExpiredNotification_whenEventWasNotProcessedBefore() {
+        UUID eventId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
+        UUID screeningId = UUID.randomUUID();
+
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
+                        eventId,
+                        BookingEventType.BOOKING_EXPIRED.eventName(),
+                        bookingId,
+                        NOW,
+                        bookingExpiredPayloadNode);
+
+        BookingExpiredPayload bookingExpiredPayload = new BookingExpiredPayload(
+                        customerId,
+                        "guest@example.com",
+                        screeningId);
+
+        BookingExpiredEvent expectedBookingExpiredEvent = new BookingExpiredEvent(
+                        eventId,
+                        bookingId,
+                        customerId,
+                        "guest@example.com",
+                        screeningId,
+                        NOW);
+
+        LocalDateTime processedAt = LocalDateTime.ofInstant(NOW,
+                        ZoneOffset.UTC);
+
+        when(processedEventRepository.insertIfAbsent(
+                        eventId,
+                        BookingEventType.BOOKING_EXPIRED.eventName(),
+                        processedAt)).thenReturn(1);
+
+        when(jsonMapper.convertValue(
+                        bookingExpiredPayloadNode,
+                        BookingExpiredPayload.class)).thenReturn(bookingExpiredPayload);
+
+        bookingEventListener.handleBookingEvent(bookingEventMessage);
+
+        verify(notificationService)
+                .handleBookingExpired(expectedBookingExpiredEvent);
     }
 
     @Test
@@ -116,6 +165,30 @@ class BookingEventListenerTest {
         when(processedEventRepository.insertIfAbsent(
                         eventId,
                         BookingEventType.BOOKING_CANCELLED.eventName(),
+                        processedAt)
+        ).thenReturn(0);
+
+        bookingEventListener.handleBookingEvent(bookingEventMessage);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void handleBookingEvent_shouldSkipBookingExpiredNotification_whenEventWasAlreadyProcessed() {
+        UUID eventId = UUID.randomUUID();
+
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
+                        eventId,
+                        BookingEventType.BOOKING_EXPIRED.eventName(),
+                        UUID.randomUUID(),
+                        NOW,
+                        bookingExpiredPayloadNode);
+
+        LocalDateTime processedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+
+        when(processedEventRepository.insertIfAbsent(
+                eventId,
+                        BookingEventType.BOOKING_EXPIRED.eventName(),
                         processedAt)).thenReturn(0);
 
         bookingEventListener.handleBookingEvent(bookingEventMessage);

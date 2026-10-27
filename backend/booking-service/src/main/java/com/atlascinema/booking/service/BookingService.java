@@ -140,7 +140,7 @@ public class BookingService {
                 occurredAt);
 
         // store the event in the same database transaction as the booking change
-        outboxEventWriter.save(bookingCancelledEvent, now);
+        outboxEventWriter.saveCancelled(bookingCancelledEvent, now);
 
         /*
          * flush the database change before releasing Redis holds

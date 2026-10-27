@@ -83,7 +83,7 @@ class OutboxPublisherIntegrationTest extends AbstractIntegrationTest {
 
         LocalDateTime createdAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
 
-        outboxEventWriter.save(bookingCancelledEvent, createdAt);
+        outboxEventWriter.saveCancelled(bookingCancelledEvent, createdAt);
 
         OutboxEvent outboxEventBeforePublishing = outboxEventRepository
                         .findById(eventId)
