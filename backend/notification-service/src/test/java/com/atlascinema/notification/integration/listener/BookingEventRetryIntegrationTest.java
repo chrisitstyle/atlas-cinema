@@ -2,6 +2,9 @@ package com.atlascinema.notification.integration.listener;
 
 import com.atlascinema.notification.config.NotificationKafkaProperties;
 import com.atlascinema.notification.event.BookingCancelledEvent;
+import com.atlascinema.notification.event.BookingCancelledPayload;
+import com.atlascinema.notification.event.BookingEventMessage;
+import com.atlascinema.notification.event.BookingEventType;
 import com.atlascinema.notification.integration.AbstractIntegrationTest;
 import com.atlascinema.notification.processed.ProcessedEventRepository;
 import com.atlascinema.notification.service.NotificationService;
@@ -31,7 +34,6 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -54,7 +56,7 @@ class BookingEventRetryIntegrationTest extends AbstractIntegrationTest {
     private ProcessedEventRepository processedEventRepository;
 
     @Autowired
-    private NotificationKafkaProperties kafkaProperties;
+    private NotificationKafkaProperties notificationKafkaProperties;
 
     @Autowired
     private JsonMapper jsonMapper;
@@ -68,129 +70,147 @@ class BookingEventRetryIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void bookingCancelled_shouldBePublishedToDlt_whenAllRetriesFail()
-            throws Exception {
+    void bookingCancelled_shouldBePublishedToDlt_whenAllRetriesFail() throws Exception {
 
-        BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
-                        UUID.randomUUID(),
-                        UUID.randomUUID(),
+        UUID eventId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID screeningId = UUID.randomUUID();
+
+        BookingCancelledPayload bookingCancelledPayload = new BookingCancelledPayload(
                         null,
                         "guest@example.com",
-                        UUID.randomUUID(),
+                        screeningId);
+
+        BookingEventMessage bookingEventMessage = new BookingEventMessage(
+                        eventId,
+                        BookingEventType.BOOKING_CANCELLED.eventName(),
+                        bookingId,
+                        NOW,
+                        jsonMapper.valueToTree(bookingCancelledPayload));
+
+        BookingCancelledEvent expectedBookingCancelledEvent = new BookingCancelledEvent(
+                        eventId,
+                        bookingId,
+                        null,
+                        "guest@example.com",
+                        screeningId,
                         NOW);
 
         /*
          * Every listener attempt fails so the error handler
-         * must eventually move the event to the DLT
+         * must eventually move the message to the DLT
          */
-        doThrow(new IllegalStateException("Notification failed"))
-                .when(notificationService)
+        doThrow(new IllegalStateException(
+                        "Notification failed")).when(notificationService)
                 .handleBookingCancelled(
-                        any(BookingCancelledEvent.class)
-                );
+                        expectedBookingCancelledEvent);
 
         /*
-         * Send a real event through Kafka instead of calling
-         * the listener directly
+         * Send a real booking event message through Kafka
+         * instead of calling the listener directly
          */
         dltKafkaTemplate.send(
-                        kafkaProperties.bookingEventsTopic(),
-                        bookingCancelledEvent.bookingId().toString(),
-                        bookingCancelledEvent).get(5, TimeUnit.SECONDS);
+                        notificationKafkaProperties.bookingEventsTopic(),
+                        bookingId.toString(),
+                        bookingEventMessage).get(5, TimeUnit.SECONDS);
 
-        ConsumerRecord<String, String> dltRecord = consumeFromDlt(
-                        bookingCancelledEvent.eventId());
+        ConsumerRecord<String, String> deadLetterRecord = consumeBookingEventFromDlt(bookingId);
 
-        BookingCancelledEvent dltEvent = jsonMapper.readValue(dltRecord.value(), BookingCancelledEvent.class);
+        BookingEventMessage deadLetterBookingEventMessage = jsonMapper.readValue(
+                        deadLetterRecord.value(),
+                        BookingEventMessage.class);
 
-        assertThat(dltEvent.eventId())
-                .isEqualTo(bookingCancelledEvent.eventId());
+        assertThat(deadLetterBookingEventMessage.eventId()).isEqualTo(eventId);
 
-        assertThat(dltEvent.bookingId())
-                .isEqualTo(bookingCancelledEvent.bookingId());
+        assertThat(deadLetterBookingEventMessage.eventType()).isEqualTo(BookingEventType.BOOKING_CANCELLED.eventName());
 
-        assertThat(dltEvent.contactEmail())
-                .isEqualTo(bookingCancelledEvent.contactEmail());
+        assertThat(deadLetterBookingEventMessage.bookingId()).isEqualTo(bookingId);
 
-        assertThat(dltEvent.screeningId())
-                .isEqualTo(bookingCancelledEvent.screeningId());
+        assertThat(deadLetterBookingEventMessage.occurredAt()).isEqualTo(NOW);
 
-        assertThat(dltEvent.occurredAt())
-                .isEqualTo(bookingCancelledEvent.occurredAt());
+        BookingCancelledPayload deadLetterBookingCancelledPayload = jsonMapper.convertValue(
+                        deadLetterBookingEventMessage.payload(),
+                        BookingCancelledPayload.class);
 
-        // The original Kafka key should be preserved in the DLT record
-        assertThat(dltRecord.key()).isEqualTo(bookingCancelledEvent.bookingId().toString());
+        assertThat(deadLetterBookingCancelledPayload.customerId()).isNull();
+
+        assertThat(deadLetterBookingCancelledPayload.contactEmail()).isEqualTo("guest@example.com");
+
+        assertThat(deadLetterBookingCancelledPayload.screeningId()).isEqualTo(screeningId);
+
+        /*
+         * The original Kafka key must be preserved
+         * in the dead letter record
+         */
+        assertThat(deadLetterRecord.key()).isEqualTo(bookingId.toString());
 
         /*
          * Initial attempt plus two retries means
          * three notification attempts in total
          */
-        verify(notificationService,
-                times(3)).handleBookingCancelled(
-                any(BookingCancelledEvent.class));
+        verify(notificationService, times(3)).handleBookingCancelled(
+                expectedBookingCancelledEvent);
 
         /*
          * Every failed attempt rolls back its database transaction
          * so the event must not be marked as successfully processed
          */
-        assertThat(processedEventRepository.existsById(bookingCancelledEvent.eventId())).isFalse();
+        assertThat(processedEventRepository.existsById(eventId)).isFalse();
     }
 
-    private ConsumerRecord<String, String> consumeFromDlt(UUID expectedEventId) throws Exception {
+    private ConsumerRecord<String, String> consumeBookingEventFromDlt(
+            UUID expectedBookingId
+    ) {
+        Properties consumerProperties = new Properties();
 
-        Properties properties = new Properties();
-
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
                 KAFKA.getBootstrapServers());
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.GROUP_ID_CONFIG,
                 "notification-dlt-test-" + UUID.randomUUID());
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                 "earliest");
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
                 StringDeserializer.class);
 
-        properties.put(
+        consumerProperties.put(
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
                 StringDeserializer.class);
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
+        try (KafkaConsumer<String, String> deadLetterConsumer = new KafkaConsumer<>(consumerProperties)) {
 
-            consumer.subscribe(List.of(kafkaProperties.bookingEventsDltTopic()));
+            deadLetterConsumer.subscribe(
+                    List.of(notificationKafkaProperties.bookingEventsDltTopic()));
 
-            Instant deadline = Instant.now().plusSeconds(10);
+            Instant pollingDeadline = Instant.now().plusSeconds(10);
 
-            while (Instant.now().isBefore(deadline)) {
-
-                for (ConsumerRecord<String, String> record :
-                        consumer.poll(
+            while (Instant.now().isBefore(pollingDeadline)) {
+                for (ConsumerRecord<String, String> deadLetterRecord :
+                        deadLetterConsumer.poll(
                                 Duration.ofMillis(250)
                         )) {
 
-                    BookingCancelledEvent bookingCancelledEvent = jsonMapper.readValue(
-                                    record.value(),
-                                    BookingCancelledEvent.class
-                            );
-
                     /*
-                     * The topic may contain records from earlier tests
-                     * so wait for the exact event created by this test
+                     * The DLT may contain records from other tests,
+                     * including malformed records that cannot be deserialized
                      */
-                    if (bookingCancelledEvent.eventId().equals(expectedEventId)) {
-                        return record;
+                    if (expectedBookingId
+                            .toString()
+                            .equals(deadLetterRecord.key())) {
+
+                        return deadLetterRecord;
                     }
                 }
             }
 
-            throw new AssertionError(
-                    "Kafka did not publish event "
-                            + expectedEventId
+            throw new AssertionError("Kafka did not publish booking event for booking "
+                            + expectedBookingId
                             + " to the DLT");
         }
     }
@@ -199,23 +219,24 @@ class BookingEventRetryIntegrationTest extends AbstractIntegrationTest {
     static class KafkaTopicsConfiguration {
 
         @Bean
-        NewTopic bookingEventsTopic(
-                NotificationKafkaProperties kafkaProperties
-        ) {
+        NewTopic bookingEventsTopic(NotificationKafkaProperties notificationKafkaProperties) {
             return TopicBuilder
-                    .name(kafkaProperties.bookingEventsTopic())
+                    .name(notificationKafkaProperties.bookingEventsTopic())
                     .partitions(1)
                     .replicas(1)
                     .build();
         }
 
         @Bean
-        NewTopic bookingEventsDltTopic(NotificationKafkaProperties kafkaProperties) {
+        NewTopic bookingEventsDltTopic(
+                NotificationKafkaProperties notificationKafkaProperties
+        ) {
             /*
              * The DLT needs the same partition number because
              * failed records keep their original partition
              */
-            return TopicBuilder.name(kafkaProperties.bookingEventsDltTopic())
+            return TopicBuilder
+                    .name(notificationKafkaProperties.bookingEventsDltTopic())
                     .partitions(1)
                     .replicas(1)
                     .build();

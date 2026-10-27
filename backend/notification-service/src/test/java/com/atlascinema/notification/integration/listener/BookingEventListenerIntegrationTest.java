@@ -1,6 +1,9 @@
 package com.atlascinema.notification.integration.listener;
 
 import com.atlascinema.notification.event.BookingCancelledEvent;
+import com.atlascinema.notification.event.BookingCancelledPayload;
+import com.atlascinema.notification.event.BookingEventMessage;
+import com.atlascinema.notification.event.BookingEventType;
 import com.atlascinema.notification.integration.AbstractIntegrationTest;
 import com.atlascinema.notification.listener.BookingEventListener;
 import com.atlascinema.notification.processed.ProcessedEvent;
@@ -10,13 +13,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 class BookingEventListenerIntegrationTest extends AbstractIntegrationTest {
 
@@ -28,6 +34,9 @@ class BookingEventListenerIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     private ProcessedEventRepository processedEventRepository;
 
+    @Autowired
+    private JsonMapper jsonMapper;
+
     @MockitoBean
     private NotificationService notificationService;
 
@@ -37,44 +46,53 @@ class BookingEventListenerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void handleBookingCancelled_shouldHandleEventOnlyOnce_whenSameEventIsDeliveredTwice() {
-        BookingCancelledEvent bookingCancelledEvent = createCancelledEvent();
+    void handleBookingEvent_shouldHandleBookingCancelledEventOnlyOnce_whenSameEventIsDeliveredTwice() {
+        BookingCancelledEvent bookingCancelledEvent = createBookingCancelledEvent();
 
-        bookingEventListener.handleBookingCancelled(bookingCancelledEvent);
+        BookingEventMessage bookingEventMessage = createBookingEventMessage(bookingCancelledEvent);
 
-        bookingEventListener.handleBookingCancelled(bookingCancelledEvent);
+        bookingEventListener.handleBookingEvent(bookingEventMessage);
 
-        // the same event id can exist only once in processed_events
-        assertThat(processedEventRepository.count())
-                .isEqualTo(1);
+        bookingEventListener.handleBookingEvent(bookingEventMessage);
+
+        /*
+         * The same event id can exist only once
+         * in processed_events
+         */
+        assertThat(processedEventRepository.count()).isEqualTo(1);
 
         ProcessedEvent processedEvent = processedEventRepository
-                        .findById(bookingCancelledEvent.eventId())
-                        .orElseThrow();
+                        .findById(bookingCancelledEvent.eventId()).orElseThrow();
 
-        assertThat(processedEvent.getEventId())
-                .isEqualTo(bookingCancelledEvent.eventId());
+        assertThat(processedEvent.getEventId()
+        ).isEqualTo(bookingCancelledEvent.eventId());
 
-        assertThat(processedEvent.getEventType())
-                .isEqualTo("BookingCancelled");
+        assertThat(processedEvent.getEventType()).isEqualTo(BookingEventType.BOOKING_CANCELLED.eventName());
 
-        assertThat(processedEvent.getProcessedAt())
-                .isNotNull();
+        assertThat(processedEvent.getProcessedAt()).isNotNull();
 
-        // duplicate Kafka delivery must not trigger the notification twice
-        verify(notificationService, times(1))
-                .handleBookingCancelled(bookingCancelledEvent);
+        /*
+         * Duplicate Kafka delivery must not trigger
+         * the notification twice
+         */
+        verify(notificationService, times(1)
+        ).handleBookingCancelled(bookingCancelledEvent);
     }
 
     @Test
-    void handleBookingCancelled_shouldRollbackProcessedEvent_whenNotificationHandlingFails() {
-        BookingCancelledEvent bookingCancelledEvent = createCancelledEvent();
+    void handleBookingEvent_shouldRollbackProcessedEvent_whenBookingCancelledNotificationHandlingFails() {
+        BookingCancelledEvent bookingCancelledEvent = createBookingCancelledEvent();
 
-        doThrow(new IllegalStateException("Notification failed"))
-                .when(notificationService)
+        BookingEventMessage bookingEventMessage = createBookingEventMessage(
+                        bookingCancelledEvent);
+
+        doThrow(new IllegalStateException("Notification failed")
+        ).when(notificationService)
                 .handleBookingCancelled(bookingCancelledEvent);
 
-        assertThatThrownBy(() -> bookingEventListener.handleBookingCancelled(bookingCancelledEvent))
+        assertThatThrownBy(() -> bookingEventListener.handleBookingEvent(
+                        bookingEventMessage)
+        )
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("Notification failed");
 
@@ -85,7 +103,7 @@ class BookingEventListenerIntegrationTest extends AbstractIntegrationTest {
         assertThat(processedEventRepository.existsById(bookingCancelledEvent.eventId())).isFalse();
     }
 
-    private BookingCancelledEvent createCancelledEvent() {
+    private BookingCancelledEvent createBookingCancelledEvent() {
         return new BookingCancelledEvent(
                 UUID.randomUUID(),
                 UUID.randomUUID(),
@@ -93,5 +111,21 @@ class BookingEventListenerIntegrationTest extends AbstractIntegrationTest {
                 "guest@example.com",
                 UUID.randomUUID(),
                 NOW);
+    }
+
+    private BookingEventMessage createBookingEventMessage(
+            BookingCancelledEvent bookingCancelledEvent
+    ) {
+        BookingCancelledPayload bookingCancelledPayload = new BookingCancelledPayload(
+                        bookingCancelledEvent.customerId(),
+                        bookingCancelledEvent.contactEmail(),
+                        bookingCancelledEvent.screeningId());
+
+        return new BookingEventMessage(
+                bookingCancelledEvent.eventId(),
+                BookingEventType.BOOKING_CANCELLED.eventName(),
+                bookingCancelledEvent.bookingId(),
+                bookingCancelledEvent.occurredAt(),
+                jsonMapper.valueToTree(bookingCancelledPayload));
     }
 }

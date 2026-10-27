@@ -1,5 +1,7 @@
 package com.atlascinema.notification.config;
 
+import com.atlascinema.notification.exception.InvalidBookingEventPayloadException;
+import com.atlascinema.notification.exception.UnsupportedBookingEventTypeException;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -12,41 +14,59 @@ import org.springframework.util.backoff.FixedBackOff;
 
 import java.time.Duration;
 
+/*
+ * Configures retry and dead letter handling for booking events consumed from Kafka
+ */
 @Configuration
 public class KafkaErrorHandlingConfig {
 
-    private static final Duration DLT_PUBLISH_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration DLT_PUBLISH_TIMEOUT =
+            Duration.ofSeconds(5);
 
     @Bean
     public CommonErrorHandler kafkaErrorHandler(
             @Qualifier("dltKafkaTemplate")
-            KafkaTemplate<String, Object> kafkaTemplate,
-            NotificationKafkaProperties kafkaProperties
+            KafkaTemplate<String, Object> dltKafkaTemplate,
+            NotificationKafkaProperties notificationKafkaProperties
     ) {
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
-                        (record, exception) ->
+        DeadLetterPublishingRecoverer deadLetterPublishingRecoverer =
+                new DeadLetterPublishingRecoverer(
+                        dltKafkaTemplate,
+                        (consumerRecord, exception) ->
                                 new TopicPartition(
-                                        kafkaProperties.bookingEventsDltTopic(),
-                                        record.partition()));
+                                        notificationKafkaProperties.bookingEventsDltTopic(),
+                                        consumerRecord.partition()));
 
         /*
-         * dont consider recovery successful when Kafka
+         * Do not consider recovery successful when Kafka
          * failed to store the record in the dead letter topic
          */
-        recoverer.setFailIfSendResultIsError(true);
-
-        // dont wait indefinitely for Kafka to acknowledge the DLT record
-        recoverer.setWaitForSendResultTimeout(DLT_PUBLISH_TIMEOUT);
-
-        FixedBackOff backOff = new FixedBackOff(kafkaProperties
-                                .retryInterval()
-                                .toMillis(),
-                        kafkaProperties.maxRetries());
+        deadLetterPublishingRecoverer.setFailIfSendResultIsError(true);
 
         /*
-         * Retry the failed record and send it to the DLT
-         * when all configured attempts are exhausted
+         * Do not wait indefinitely for Kafka to acknowledge
+         * the record published to the dead letter topic
          */
-        return new DefaultErrorHandler(recoverer, backOff);
+        deadLetterPublishingRecoverer.setWaitForSendResultTimeout(DLT_PUBLISH_TIMEOUT);
+
+        FixedBackOff bookingEventRetryBackOff = new FixedBackOff(
+                        notificationKafkaProperties
+                                .retryInterval()
+                                .toMillis(),
+                        notificationKafkaProperties.maxRetries());
+
+        DefaultErrorHandler bookingEventErrorHandler = new DefaultErrorHandler(
+                        deadLetterPublishingRecoverer,
+                        bookingEventRetryBackOff);
+
+        /*
+         * Retrying cannot fix an unsupported event type
+         * or an invalid event-specific payload
+         */
+        bookingEventErrorHandler.addNotRetryableExceptions(
+                UnsupportedBookingEventTypeException.class,
+                InvalidBookingEventPayloadException.class);
+
+        return bookingEventErrorHandler;
     }
 }
