@@ -6,6 +6,7 @@ import com.atlascinema.booking.client.dto.ScreeningClientResponse;
 import com.atlascinema.booking.client.dto.ScreeningClientStatus;
 import com.atlascinema.booking.config.BookingProperties;
 import com.atlascinema.booking.domain.BookingSeat;
+import com.atlascinema.booking.dto.BookingPaymentDetailsResponse;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.domain.Booking;
@@ -114,6 +115,15 @@ public class BookingService {
 
             throw exception;
         }
+    }
+
+    @Transactional(readOnly = true)
+    public BookingPaymentDetailsResponse getBookingPaymentDetails(UUID bookingId) {
+        Booking booking = bookingRepository
+                .findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException(bookingId));
+
+        return BookingPaymentDetailsResponse.from(booking, clock.getZone());
     }
 
     @Transactional

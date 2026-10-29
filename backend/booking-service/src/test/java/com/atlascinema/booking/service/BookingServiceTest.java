@@ -8,6 +8,7 @@ import com.atlascinema.booking.client.dto.SeatClientResponse;
 import com.atlascinema.booking.config.BookingProperties;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingStatus;
+import com.atlascinema.booking.dto.BookingPaymentDetailsResponse;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.event.BookingCancelledEvent;
@@ -476,10 +477,8 @@ class BookingServiceTest {
 
         verify(screeningClient).getScreening(screeningId);
 
-        verify(bookingRepository, never())
-                .save(any(Booking.class));
-        verify(bookingRepository)
-                .flush();
+        verify(bookingRepository, never()).save(any(Booking.class));
+        verify(bookingRepository).flush();
 
         verify(redisSeatHoldService).releaseSeat(screeningId, seatId, booking.getId());
 
@@ -489,24 +488,57 @@ class BookingServiceTest {
         verify(outboxEventWriter)
                 .saveCancelled(eventCaptor.capture(), eq(now));
 
-        BookingCancelledEvent event = eventCaptor.getValue();
+        BookingCancelledEvent bookingCancelledEvent = eventCaptor.getValue();
 
-        assertThat(event.eventId())
-                .isNotNull();
+        assertThat(bookingCancelledEvent.eventId()).isNotNull();
 
-        assertThat(event.bookingId())
-                .isEqualTo(booking.getId());
+        assertThat(bookingCancelledEvent.bookingId()).isEqualTo(booking.getId());
 
-        assertThat(event.customerId())
-                .isEqualTo(booking.getCustomerId());
+        assertThat(bookingCancelledEvent.customerId()).isEqualTo(booking.getCustomerId());
 
-        assertThat(event.contactEmail())
-                .isEqualTo(booking.getContactEmail());
+        assertThat(bookingCancelledEvent.contactEmail()).isEqualTo(booking.getContactEmail());
 
-        assertThat(event.screeningId())
-                .isEqualTo(screeningId);
+        assertThat(bookingCancelledEvent.screeningId()).isEqualTo(screeningId);
 
-        assertThat(event.occurredAt()).isEqualTo(NOW);
+        assertThat(bookingCancelledEvent.occurredAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void getBookingPaymentDetails_shouldReturnDetails_whenBookingExists() {
+        Booking heldBooking = Booking.create(
+                null,
+                "guest@example.com",
+                screeningId,
+                now);
+
+        heldBooking.addSeat(seatId, new BigDecimal("29.90"));
+        heldBooking.markAsHeld(now.plus(HOLD_DURATION));
+
+        when(bookingRepository.findById(heldBooking.getId()))
+                .thenReturn(Optional.of(heldBooking));
+
+        BookingPaymentDetailsResponse paymentDetails = bookingService.getBookingPaymentDetails(heldBooking.getId());
+
+        assertThat(paymentDetails.bookingId()).isEqualTo(heldBooking.getId());
+
+        assertThat(paymentDetails.customerId()).isNull();
+
+        assertThat(paymentDetails.status()).isEqualTo(BookingStatus.HELD);
+
+        assertThat(paymentDetails.totalPrice()).isEqualByComparingTo("29.90");
+
+        assertThat(paymentDetails.expiresAt()).isEqualTo(NOW.plus(HOLD_DURATION));
+
+        verify(bookingRepository).findById(heldBooking.getId());
+    }
+
+    @Test
+    void getBookingPaymentDetails_shouldThrowException_whenBookingDoesNotExist() {
+        UUID missingBookingId = UUID.randomUUID();
+
+        when(bookingRepository.findById(missingBookingId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> bookingService.getBookingPaymentDetails(missingBookingId)).isInstanceOf(BookingNotFoundException.class);
     }
 
     @Test
