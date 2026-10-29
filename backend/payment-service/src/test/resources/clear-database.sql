@@ -1,0 +1,2 @@
+TRUNCATE TABLE payments;
+TRUNCATE TABLE simulated_provider_transactions;
