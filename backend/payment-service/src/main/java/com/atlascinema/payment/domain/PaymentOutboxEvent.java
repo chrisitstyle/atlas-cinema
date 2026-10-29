@@ -75,4 +75,15 @@ public class PaymentOutboxEvent {
 
         return outboxEvent;
     }
+
+    // mark the event as published only after Kafka acknowledges the message
+    public void markAsPublished(Instant publishedAt) {
+        Objects.requireNonNull(publishedAt, "Publication time is required");
+
+        if (this.publishedAt != null) {
+            return;
+        }
+
+        this.publishedAt = publishedAt;
+    }
 }

@@ -218,7 +218,6 @@ services:
         condition: service_started
 
   # payment-service
-  # payment-service
 
   payment-db:
     image: postgres:17-alpine
@@ -227,6 +226,8 @@ services:
       POSTGRES_DB: payment_db
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
 
     ports:
       - "5438:5432"
