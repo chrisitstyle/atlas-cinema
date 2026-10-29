@@ -2,35 +2,42 @@
 package com.atlascinema.payment.service;
 
 import com.atlascinema.payment.domain.Payment;
+import com.atlascinema.payment.domain.PaymentOutboxEvent;
+import com.atlascinema.payment.domain.PaymentOutboxEventType;
 import com.atlascinema.payment.domain.PaymentStatus;
+import com.atlascinema.payment.event.PaymentResultEventPayload;
 import com.atlascinema.payment.exception.PaymentNotFoundException;
 import com.atlascinema.payment.exception.PaymentNotPendingException;
 import com.atlascinema.payment.provider.PaymentProviderOutcome;
 import com.atlascinema.payment.provider.PaymentProviderResult;
+import com.atlascinema.payment.repository.PaymentOutboxRepository;
 import com.atlascinema.payment.repository.PaymentRepository;
 import com.atlascinema.payment.service.dto.PaymentChargeDetails;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /*
- * Manages short database transactions for payment processing
- * Protects payment status changes from concurrent execution
+ * Manages short transactions for payment processing
+ * Stores payment results and outbox events atomically
  */
 @Service
 @RequiredArgsConstructor
 public class PaymentProcessingTransactionService {
 
     private final PaymentRepository paymentRepository;
+    private final PaymentOutboxRepository paymentOutboxRepository;
+    private final JsonMapper jsonMapper;
     private final Clock clock;
 
     /*
-     * Atomically claims a pending payment for processing
-     * The transaction commits before the provider is called
+     * Atomically claims a pending payment before contacting the provider
      */
     @Transactional
     public PaymentChargeDetails startProcessing(UUID paymentId) {
@@ -40,9 +47,7 @@ public class PaymentProcessingTransactionService {
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
 
         if (payment.getStatus() != PaymentStatus.PENDING) {
-            throw new PaymentNotPendingException(
-                    paymentId,
-                    payment.getStatus());
+            throw new PaymentNotPendingException(paymentId, payment.getStatus());
         }
 
         payment.markAsProcessing(clock.instant());
@@ -54,8 +59,8 @@ public class PaymentProcessingTransactionService {
     }
 
     /*
-     * Saves the provider result or reuses an identical completed result
-     * The row lock prevents conflicting concurrent finalizations
+     * Completes payment processing and creates an outbox event
+     * Both changes commit or roll back together
      */
     @Transactional
     public Payment completeProcessing(
@@ -74,7 +79,7 @@ public class PaymentProcessingTransactionService {
             case DECLINED -> PaymentStatus.FAILED;
         };
 
-        // the same provider result may arrive from processing and reconciliation
+        // repeated identical results must not create duplicate events
         if (payment.getStatus() == expectedFinalStatus) {
             if (!Objects.equals(
                     payment.getProviderTransactionId(),
@@ -92,13 +97,44 @@ public class PaymentProcessingTransactionService {
                             .formatted(paymentId, payment.getStatus()));
         }
 
+        Instant completedAt = clock.instant();
+
+        PaymentOutboxEventType eventType;
+
         if (providerResult.outcome() == PaymentProviderOutcome.APPROVED) {
-            payment.markAsSucceeded(
-                    providerResult.providerTransactionId(),
-                    clock.instant());
+            payment.markAsSucceeded(providerResult.providerTransactionId(), completedAt);
+
+            eventType = PaymentOutboxEventType.PAYMENT_SUCCEEDED;
+
         } else {
-            payment.markAsFailed(providerResult.providerTransactionId(), clock.instant());
+            payment.markAsFailed(providerResult.providerTransactionId(), completedAt);
+
+            eventType = PaymentOutboxEventType.PAYMENT_FAILED;
         }
+
+        // use one event id for the outbox record and the JSON payload
+        UUID eventId = UUID.randomUUID();
+
+        PaymentResultEventPayload paymentResultEventPayload = new PaymentResultEventPayload(
+                        eventId,
+                        eventType,
+                        payment.getId(),
+                        payment.getBookingId(),
+                        payment.getAmount(),
+                        payment.getCurrencyCode(),
+                        payment.getProviderTransactionId(),
+                        completedAt);
+
+        String eventPayloadJson = jsonMapper.writeValueAsString(paymentResultEventPayload);
+
+        PaymentOutboxEvent paymentOutboxEvent = PaymentOutboxEvent.create(
+                eventId,
+                payment.getId(),
+                eventType,
+                eventPayloadJson,
+                completedAt);
+
+        paymentOutboxRepository.save(paymentOutboxEvent);
 
         return payment;
     }
