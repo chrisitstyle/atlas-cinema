@@ -64,6 +64,10 @@ public class Payment {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    // tracks the most recent attempt to recover an unknown provider result
+    @Column(name = "last_reconciliation_attempt_at")
+    private Instant lastReconciliationAttemptAt;
+
     public static Payment initiateForBooking(
             UUID bookingId,
             BigDecimal amount,
