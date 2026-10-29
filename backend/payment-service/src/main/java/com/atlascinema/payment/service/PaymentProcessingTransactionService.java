@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /*
  * Manages short database transactions for payment processing
- * doesnt communicate with the external payment provider
+ * Protects payment status changes from concurrent execution
  */
 @Service
 @RequiredArgsConstructor
@@ -54,7 +54,8 @@ public class PaymentProcessingTransactionService {
     }
 
     /*
-     * Persists the definitive provider result in a separate transaction
+     * Saves the provider result or reuses an identical completed result
+     * The row lock prevents conflicting concurrent finalizations
      */
     @Transactional
     public Payment completeProcessing(
@@ -63,22 +64,40 @@ public class PaymentProcessingTransactionService {
     ) {
         Objects.requireNonNull(paymentId, "Payment id is required");
         Objects.requireNonNull(providerResult, "Provider result is required");
+        Objects.requireNonNull(providerResult.outcome(), "Provider outcome is required");
 
         Payment payment = paymentRepository.findByIdForUpdate(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+
+        PaymentStatus expectedFinalStatus = switch (providerResult.outcome()) {
+            case APPROVED -> PaymentStatus.SUCCEEDED;
+            case DECLINED -> PaymentStatus.FAILED;
+        };
+
+        // the same provider result may arrive from processing and reconciliation
+        if (payment.getStatus() == expectedFinalStatus) {
+            if (!Objects.equals(
+                    payment.getProviderTransactionId(),
+                    providerResult.providerTransactionId()
+            )) {
+                throw new IllegalStateException("Payment %s has already been completed with a different provider transaction"
+                                .formatted(paymentId));
+            }
+
+            return payment;
+        }
+
+        if (payment.getStatus() != PaymentStatus.PROCESSING) {
+            throw new IllegalStateException("Payment %s cannot complete processing from status %s"
+                            .formatted(paymentId, payment.getStatus()));
+        }
 
         if (providerResult.outcome() == PaymentProviderOutcome.APPROVED) {
             payment.markAsSucceeded(
                     providerResult.providerTransactionId(),
                     clock.instant());
-
-        } else if (providerResult.outcome() == PaymentProviderOutcome.DECLINED) {
-            payment.markAsFailed(
-                    providerResult.providerTransactionId(),
-                    clock.instant());
-
         } else {
-            throw new IllegalArgumentException("Unsupported payment provider outcome");
+            payment.markAsFailed(providerResult.providerTransactionId(), clock.instant());
         }
 
         return payment;
