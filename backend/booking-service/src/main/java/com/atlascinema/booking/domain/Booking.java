@@ -129,6 +129,15 @@ public class Booking {
         status = BookingStatus.CANCELLED;
     }
 
+    // cancel a held booking after its payment has definitively failed
+    public void cancelAfterPaymentFailure() {
+        if (status != BookingStatus.HELD) {
+            throw new IllegalStateException("Only held bookings can be cancelled after payment failure");
+        }
+
+        status = BookingStatus.CANCELLED;
+    }
+
     // confirm only a held booking whose booking deadline has not passed
     public void markAsConfirmed(LocalDateTime confirmedAt) {
         Objects.requireNonNull(confirmedAt, "Confirmation time is required");

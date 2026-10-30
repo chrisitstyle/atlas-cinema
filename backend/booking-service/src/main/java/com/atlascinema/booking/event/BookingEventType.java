@@ -6,7 +6,8 @@ package com.atlascinema.booking.event;
 public enum BookingEventType {
 
     BOOKING_CANCELLED("BookingCancelled"),
-    BOOKING_EXPIRED("BookingExpired");
+    BOOKING_EXPIRED("BookingExpired"),
+    PAYMENT_REFUND_REQUESTED("PaymentRefundRequested");
 
     // exact value used in the Kafka JSON contract
     private final String eventName;

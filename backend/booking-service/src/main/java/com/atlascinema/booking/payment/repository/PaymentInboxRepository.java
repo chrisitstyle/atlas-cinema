@@ -62,4 +62,60 @@ public class PaymentInboxRepository {
 
         return storedPayloads.stream().findFirst();
     }
+
+    // find events waiting for business processing
+    public List<UUID> findUnprocessedEventIds(int limit) {
+        return jdbcTemplate.query("""
+                    SELECT event_id
+                    FROM payment_inbox_events
+                    WHERE processed_at IS NULL
+                    ORDER BY received_at, event_id
+                    LIMIT ?
+                    """,
+                (resultSet, rowNumber) ->
+                        resultSet.getObject("event_id", UUID.class),
+                limit);
+    }
+
+    // lock one inbox event so concurrent processors cannot handle it twice
+    public Optional<LockedPaymentInboxEvent> findByIdForUpdate(UUID eventId) {
+        List<LockedPaymentInboxEvent> events = jdbcTemplate.query("""
+                    SELECT event_id, payload, processed_at
+                    FROM payment_inbox_events
+                    WHERE event_id = ?
+                    FOR UPDATE
+                    """,
+                (resultSet, rowNumber) ->
+                        new LockedPaymentInboxEvent(
+                                resultSet.getObject("event_id", UUID.class),
+                                resultSet.getString("payload"),
+                                resultSet.getObject("processed_at") != null
+                        ), eventId);
+
+        return events.stream().findFirst();
+    }
+
+    // Complete inbox processing within the same business transaction
+    public void markAsProcessed(UUID eventId, Instant processedAt) {
+        int updatedRows = jdbcTemplate.update("""
+                    UPDATE payment_inbox_events
+                    SET processed_at = ?
+                    WHERE event_id = ?
+                      AND processed_at IS NULL
+                    """,
+                OffsetDateTime.ofInstant(processedAt, ZoneOffset.UTC),
+                eventId);
+
+        if (updatedRows != 1) {
+            throw new IllegalStateException("Payment inbox event %s could not be marked as processed"
+                            .formatted(eventId));
+        }
+    }
+
+    public record LockedPaymentInboxEvent(
+            UUID eventId,
+            String payload,
+            boolean processed
+    ) {
+    }
 }
