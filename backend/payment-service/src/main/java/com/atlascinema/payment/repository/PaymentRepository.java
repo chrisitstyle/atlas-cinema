@@ -92,4 +92,16 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
             @Param("retryEligibleBefore") Instant retryEligibleBefore,
             @Param("attemptedAt") Instant attemptedAt
     );
+
+    // find a limited batch of payments waiting to be processed
+    @Query("""
+        SELECT payment.id
+        FROM Payment payment
+        WHERE payment.status = :pendingStatus
+        ORDER BY payment.createdAt ASC, payment.id ASC
+        """)
+    List<UUID> findPendingPaymentIds(
+            @Param("pendingStatus") PaymentStatus pendingStatus,
+            Pageable pageable
+    );
 }
