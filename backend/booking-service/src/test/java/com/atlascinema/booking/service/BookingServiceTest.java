@@ -15,6 +15,7 @@ import com.atlascinema.booking.event.BookingCancelledEvent;
 import com.atlascinema.booking.exception.*;
 import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.repository.BookingRepository;
+import com.atlascinema.booking.repository.ConfirmedSeatRepository;
 import feign.FeignException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,9 @@ class BookingServiceTest {
 
     @Mock
     private BookingRepository bookingRepository;
+
+    @Mock
+    private ConfirmedSeatRepository confirmedSeatRepository;
 
     @Mock
     private ScreeningClient screeningClient;
@@ -82,6 +86,7 @@ class BookingServiceTest {
 
         bookingService = new BookingService(
                         bookingRepository,
+                        confirmedSeatRepository,
                         screeningClient,
                         cinemaClient,
                         redisSeatHoldService,
@@ -455,7 +460,7 @@ class BookingServiceTest {
 
         booking.markAsHeld(expiresAt);
 
-        when(bookingRepository.findById(booking.getId()))
+        when(bookingRepository.findByIdForUpdate(booking.getId()))
                 .thenReturn(Optional.of(booking));
 
         when(screeningClient.getScreening(screeningId))
@@ -473,7 +478,7 @@ class BookingServiceTest {
 
         assertThat(booking.getSeats()).hasSize(1);
 
-        verify(bookingRepository).findById(booking.getId());
+        verify(bookingRepository).findByIdForUpdate(booking.getId());
 
         verify(screeningClient).getScreening(screeningId);
 
@@ -545,7 +550,7 @@ class BookingServiceTest {
     void cancelBooking_shouldThrowBookingNotFoundException_whenBookingDoesNotExist() {
         UUID bookingId = UUID.randomUUID();
 
-        when(bookingRepository.findById(bookingId))
+        when(bookingRepository.findByIdForUpdate(bookingId))
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> bookingService.cancelBooking(bookingId))
@@ -573,7 +578,7 @@ class BookingServiceTest {
 
         booking.markAsHeld(expiresAt);
 
-        when(bookingRepository.findById(booking.getId()))
+        when(bookingRepository.findByIdForUpdate(booking.getId()))
                 .thenReturn(Optional.of(booking));
 
         when(screeningClient.getScreening(screeningId))

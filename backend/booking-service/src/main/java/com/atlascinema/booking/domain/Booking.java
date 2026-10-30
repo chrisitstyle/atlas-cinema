@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
@@ -48,11 +49,9 @@ public class Booking {
             scale = 2)
     private BigDecimal totalPrice;
 
-    @OneToMany(
-            mappedBy = "booking",
+    @OneToMany(mappedBy = "booking",
             cascade = CascadeType.ALL,
-            orphanRemoval = true
-    )
+            orphanRemoval = true)
     private List<BookingSeat> seats = new ArrayList<>();
 
 
@@ -105,10 +104,7 @@ public class Booking {
             throw new SeatAlreadyAddedException(seatId);
         }
 
-        BookingSeat bookingSeat = BookingSeat.create(
-                        this,
-                        seatId,
-                        price);
+        BookingSeat bookingSeat = BookingSeat.create(this, seatId, price);
 
         seats.add(bookingSeat);
 
@@ -131,6 +127,22 @@ public class Booking {
         }
 
         status = BookingStatus.CANCELLED;
+    }
+
+    // confirm only a held booking whose booking deadline has not passed
+    public void markAsConfirmed(LocalDateTime confirmedAt) {
+        Objects.requireNonNull(confirmedAt, "Confirmation time is required");
+
+        if (status != BookingStatus.HELD
+                || expiresAt == null
+                || !confirmedAt.isBefore(expiresAt)
+                || seats.isEmpty()) {
+            throw new IllegalStateException(
+                    "Booking %s cannot be confirmed".formatted(id)
+            );
+        }
+
+        status = BookingStatus.CONFIRMED;
     }
 
     public void markAsExpired() {

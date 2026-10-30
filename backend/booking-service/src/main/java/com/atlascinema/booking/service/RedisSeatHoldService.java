@@ -15,6 +15,16 @@ public class RedisSeatHoldService {
 
     private static final String KEY_PREFIX = "seat-hold:";
 
+    // verify every seat owner atomically in Redis
+    private static final RedisScript<Long> VERIFY_SEAT_HOLDS_SCRIPT = RedisScript.of("""
+            for index = 1, #KEYS do
+                if redis.call('GET', KEYS[index]) ~= ARGV[1] then
+                    return 0
+                end
+            end
+            return 1
+            """, Long.class);
+
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<Long> releaseSeatScript;
 
@@ -36,8 +46,7 @@ public class RedisSeatHoldService {
                 .setIfAbsent(
                         key,
                         bookingId.toString(),
-                        ttl
-                );
+                        ttl);
 
         // spring returns Boolean here, so this also safely handles null
         return Boolean.TRUE.equals(acquired);
@@ -50,8 +59,7 @@ public class RedisSeatHoldService {
     ) {
         String key = buildKey(
                 screeningId,
-                seatId
-        );
+                seatId);
 
         /* lua script checks the owner and deletes the hold
          as one atomic Redis operation */
@@ -62,6 +70,27 @@ public class RedisSeatHoldService {
 
         return Long.valueOf(1L)
                 .equals(deleted);
+    }
+
+    public boolean areSeatsHeldByBooking(
+            UUID screeningId,
+            List<UUID> seatIds,
+            UUID bookingId
+    ) {
+        if (seatIds.isEmpty()) {
+            return false;
+        }
+
+        List<String> seatKeys = seatIds.stream()
+                .map(seatId -> buildKey(screeningId, seatId))
+                .toList();
+
+        Long allSeatsOwned = redisTemplate.execute(
+                VERIFY_SEAT_HOLDS_SCRIPT,
+                seatKeys,
+                bookingId.toString());
+
+        return Long.valueOf(1L).equals(allSeatsOwned);
     }
 
     private String buildKey(
