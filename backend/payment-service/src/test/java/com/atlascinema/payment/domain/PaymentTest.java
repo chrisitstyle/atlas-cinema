@@ -163,11 +163,14 @@ class PaymentTest {
 
         payment.requestRefund(REFUND_REQUESTED_AT);
 
-        payment.markAsRefunded(REFUND_COMPLETED_AT);
+        payment.markAsRefunded("SIM-REF-" + payment.getId(), REFUND_COMPLETED_AT);
 
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
 
         assertThat(payment.getUpdatedAt()).isEqualTo(REFUND_COMPLETED_AT);
+
+        assertThat(payment.getProviderRefundTransactionId())
+                .isEqualTo("SIM-REF-" + payment.getId());
     }
 
     @Test

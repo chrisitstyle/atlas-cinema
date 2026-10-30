@@ -64,6 +64,10 @@ public class Payment {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    // Identifies the refund recorded by the payment provider
+    @Column(name = "provider_refund_transaction_id", length = 128)
+    private String providerRefundTransactionId;
+
     // tracks the most recent attempt to recover an unknown provider result
     @Column(name = "last_reconciliation_attempt_at")
     private Instant lastReconciliationAttemptAt;
@@ -146,8 +150,23 @@ public class Payment {
                 refundRequestedAt);
     }
 
-    public void markAsRefunded(Instant refundCompletedAt) {
-        changeStatus(PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED, refundCompletedAt);
+    // Record the completed provider refund and its reference
+    public void markAsRefunded(
+            String providerRefundTransactionId,
+            Instant refundCompletedAt
+    ) {
+        if (providerRefundTransactionId == null
+                || providerRefundTransactionId.isBlank()
+                || providerRefundTransactionId.length() > 128) {
+            throw new IllegalArgumentException("Provider refund transaction id must contain between 1 and 128 characters");
+        }
+
+        changeStatus(
+                PaymentStatus.REFUND_PENDING,
+                PaymentStatus.REFUNDED,
+                refundCompletedAt);
+
+        this.providerRefundTransactionId = providerRefundTransactionId;
     }
 
     // update the provider reference and final payment status together
