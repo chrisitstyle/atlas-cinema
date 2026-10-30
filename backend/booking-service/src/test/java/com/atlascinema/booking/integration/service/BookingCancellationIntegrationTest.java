@@ -18,6 +18,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -51,6 +53,9 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private OutboxEventRepository outboxEventRepository;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @MockitoBean
     private Clock clock;
@@ -100,8 +105,7 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(redisTemplate.opsForValue().get(key)).isEqualTo(firstBooking.id().toString());
 
-        BookingResponse cancelledBooking =
-                bookingService.cancelBooking(firstBooking.id());
+        BookingResponse cancelledBooking = bookingService.cancelBooking(firstBooking.id());
 
         assertThat(cancelledBooking.status()).isEqualTo(BookingStatus.CANCELLED);
 
@@ -143,6 +147,82 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
                 .isEqualTo(secondBooking.id().toString());
 
         assertThat(bookingRepository.count()).isEqualTo(2);
+    }
+
+    @Test
+    void cancelBooking_shouldNotReleaseSeatUntilOuterTransactionCommits() {
+        BookingResponse booking = createHeldBooking();
+        String key = redisHoldKey();
+
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
+        transactionTemplate.executeWithoutResult(status -> {
+            BookingResponse cancelledBooking = bookingService.cancelBooking(booking.id());
+
+            assertThat(cancelledBooking.status()).isEqualTo(BookingStatus.CANCELLED);
+
+            // the database transaction has not committed yet
+            assertThat(redisTemplate.opsForValue().get(key))
+                    .isEqualTo(booking.id().toString());
+        });
+
+        // AFTER_COMMIT listener releases the hold only after the transaction succeeds
+        assertThat(redisTemplate.hasKey(key)).isFalse();
+
+        assertThat(bookingRepository
+                .findById(booking.id())
+                .orElseThrow()
+                .getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+
+        assertThat(outboxEventRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void cancelBooking_shouldKeepSeatHold_whenOuterTransactionRollsBack() {
+        BookingResponse booking = createHeldBooking();
+        String key = redisHoldKey();
+
+        try {
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
+            transactionTemplate.executeWithoutResult(status -> {
+                BookingResponse cancelledBooking = bookingService.cancelBooking(booking.id());
+
+                assertThat(cancelledBooking.status()).isEqualTo(BookingStatus.CANCELLED);
+
+                assertThat(redisTemplate.opsForValue().get(key)).isEqualTo(booking.id().toString());
+
+                // simulate a failure later in the same database transaction
+                status.setRollbackOnly();
+            });
+
+            assertThat(bookingRepository
+                    .findById(booking.id())
+                    .orElseThrow()
+                    .getStatus())
+                    .isEqualTo(BookingStatus.HELD);
+
+            assertThat(outboxEventRepository.count()).isZero();
+
+            assertThat(redisTemplate.opsForValue().get(key)).isEqualTo(booking.id().toString());
+
+        } finally {
+            // this test deliberately leaves a valid hold, so remove its fixture
+            redisTemplate.delete(key);
+        }
+    }
+
+    private BookingResponse createHeldBooking() {
+        return bookingService.createBooking(new CreateBookingRequest(
+                        UUID.randomUUID(),
+                        "cancel-after-commit@example.com",
+                        screeningId,
+                        List.of(seatId)));
+    }
+
+    private String redisHoldKey() {
+        return "seat-hold:" + screeningId + ":" + seatId;
     }
 
     private LocalDateTime now() {

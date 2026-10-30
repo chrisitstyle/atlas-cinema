@@ -12,6 +12,7 @@ import com.atlascinema.booking.dto.BookingPaymentDetailsResponse;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.event.BookingCancelledEvent;
+import com.atlascinema.booking.event.BookingSeatHoldsReleaseRequested;
 import com.atlascinema.booking.exception.*;
 import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.repository.BookingRepository;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
 import java.time.*;
@@ -55,6 +57,9 @@ class BookingServiceTest {
 
     @Mock
     private OutboxEventWriter outboxEventWriter;
+
+    @Mock
+    private ApplicationEventPublisher applicationEventPublisher;
 
 
     private Clock clock;
@@ -92,7 +97,8 @@ class BookingServiceTest {
                         redisSeatHoldService,
                         bookingProperties,
                         clock,
-                        outboxEventWriter);
+                        outboxEventWriter,
+                applicationEventPublisher);
     }
 
     @Test
@@ -485,7 +491,19 @@ class BookingServiceTest {
         verify(bookingRepository, never()).save(any(Booking.class));
         verify(bookingRepository).flush();
 
-        verify(redisSeatHoldService).releaseSeat(screeningId, seatId, booking.getId());
+
+        ArgumentCaptor<BookingSeatHoldsReleaseRequested> releaseCaptor = ArgumentCaptor
+                .forClass(BookingSeatHoldsReleaseRequested.class);
+
+        verify(applicationEventPublisher).publishEvent(releaseCaptor.capture());
+
+        assertThat(releaseCaptor.getValue().bookingId()).isEqualTo(booking.getId());
+
+        assertThat(releaseCaptor.getValue().screeningId()).isEqualTo(screeningId);
+
+        assertThat(releaseCaptor.getValue().seatIds()).containsExactly(seatId);
+
+        verifyNoInteractions(redisSeatHoldService);
 
         ArgumentCaptor<BookingCancelledEvent> eventCaptor = ArgumentCaptor.forClass(
                         BookingCancelledEvent.class);

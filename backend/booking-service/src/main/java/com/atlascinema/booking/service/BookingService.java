@@ -11,6 +11,7 @@ import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.event.BookingCancelledEvent;
+import com.atlascinema.booking.event.BookingSeatHoldsReleaseRequested;
 import com.atlascinema.booking.exception.BookingNotFoundException;
 import com.atlascinema.booking.exception.ScreeningNotFoundException;
 import com.atlascinema.booking.exception.ScreeningUnavailableException;
@@ -22,6 +23,7 @@ import com.atlascinema.booking.repository.ConfirmedSeatRepository;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +48,7 @@ public class BookingService {
     private final BookingProperties bookingProperties;
     private final Clock clock;
     private final OutboxEventWriter outboxEventWriter;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Transactional
     public BookingResponse createBooking(
@@ -148,10 +151,9 @@ public class BookingService {
 
         ScreeningClientResponse screening = getScreening(booking.getScreeningId());
 
-        // the same moment in whole transaction
         Instant occurredAt = clock.instant();
 
-        LocalDateTime now = LocalDateTime.ofInstant(occurredAt,clock.getZone());
+        LocalDateTime now = LocalDateTime.ofInstant(occurredAt, clock.getZone());
 
         booking.cancel(now, screening.startsAt());
 
@@ -163,25 +165,22 @@ public class BookingService {
                 booking.getScreeningId(),
                 occurredAt);
 
-        // store the event in the same database transaction as the booking change
+        // store the event atomically with the booking status change
         outboxEventWriter.saveCancelled(bookingCancelledEvent, now);
 
-        /*
-         * flush the database change before releasing Redis holds
-         * this reduces the chance of releasing seats when the database update fails
-         */
+        // surface database errors before registering the post-commit cleanup
         bookingRepository.flush();
 
-        List<UUID> seatIds = booking
-                .getSeats()
-                .stream()
+        List<UUID> seatIds = booking.getSeats().stream()
                 .map(BookingSeat::getSeatId)
                 .toList();
 
-        releaseSeats(
-                booking.getScreeningId(),
-                booking.getId(),
-                seatIds);
+        // Redis cleanup must happen only after the PostgreSQL commit succeeds
+        applicationEventPublisher.publishEvent(
+                new BookingSeatHoldsReleaseRequested(
+                        booking.getId(),
+                        booking.getScreeningId(),
+                        seatIds));
 
         return BookingResponse.from(booking);
     }
