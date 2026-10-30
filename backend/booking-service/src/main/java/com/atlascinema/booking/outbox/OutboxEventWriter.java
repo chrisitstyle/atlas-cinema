@@ -5,7 +5,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -83,5 +85,28 @@ public class OutboxEventWriter {
          * sends it to Kafka
          */
         outboxEventRepository.save(outboxEvent);
+    }
+
+    // persist a refund request in the same transaction as the inbox decision
+    public void savePaymentRefundRequested(
+            UUID bookingId,
+            UUID paymentId,
+            String providerTransactionId,
+            Instant occurredAt,
+            LocalDateTime createdAt
+    ) {
+        PaymentRefundRequestedPayload payload = new PaymentRefundRequestedPayload(
+                        paymentId,
+                        providerTransactionId,
+                        "BOOKING_NOT_CONFIRMABLE");
+
+        BookingEventMessage message = new BookingEventMessage(
+                UUID.randomUUID(),
+                BookingEventType.PAYMENT_REFUND_REQUESTED.eventName(),
+                bookingId,
+                occurredAt,
+                jsonMapper.valueToTree(payload));
+
+        saveBookingEventMessage(message, createdAt);
     }
 }
