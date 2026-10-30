@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,11 +35,11 @@ public class PaymentRefundTransactionService {
     private final PaymentRepository paymentRepository;
     private final JsonMapper jsonMapper;
     private final Clock clock;
+    private final PaymentRefundedOutboxWriter paymentRefundedOutboxWriter;
 
     @Transactional
     public Optional<PaymentRefundDetails> startRefund(UUID eventId) {
-        PaymentRefundInboxRepository.LockedRefundInboxEvent inboxEvent =
-                lockInboxEvent(eventId);
+        PaymentRefundInboxRepository.LockedRefundInboxEvent inboxEvent = lockInboxEvent(eventId);
 
         if (inboxEvent.processed()) {
             return Optional.empty();
@@ -67,8 +68,7 @@ public class PaymentRefundTransactionService {
                 payment.getId(),
                 payment.getProviderTransactionId(),
                 payment.getAmount(),
-                payment.getCurrencyCode()
-        ));
+                payment.getCurrencyCode()));
     }
 
     @Transactional
@@ -96,17 +96,20 @@ public class PaymentRefundTransactionService {
             }
 
         } else if (payment.getStatus() == PaymentStatus.REFUND_PENDING) {
-            payment.markAsRefunded(
-                    providerResult.providerRefundTransactionId(),
-                    clock.instant());
+            Instant completedAt = clock.instant();
+
+            payment.markAsRefunded(providerResult.providerRefundTransactionId(), completedAt);
+
+            // store the refund event atomically with the payment status update
+            paymentRefundedOutboxWriter.saveRefunded(payment, completedAt);
 
         } else {
-            throw new IllegalStateException("Payment %s cannot complete refund from status %s"
+            throw new IllegalStateException(
+                    "Payment %s cannot complete refund from status %s"
                             .formatted(payment.getId(), payment.getStatus()));
         }
 
         if (!inboxEvent.processed()) {
-            // payment and inbox completion commit or roll back together
             refundInboxRepository.markAsProcessed(eventId, clock.instant());
         }
     }

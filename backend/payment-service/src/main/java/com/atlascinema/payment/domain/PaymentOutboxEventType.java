@@ -6,5 +6,6 @@ package com.atlascinema.payment.domain;
 public enum PaymentOutboxEventType {
 
     PAYMENT_SUCCEEDED,
-    PAYMENT_FAILED
+    PAYMENT_FAILED,
+    PAYMENT_REFUNDED
 }

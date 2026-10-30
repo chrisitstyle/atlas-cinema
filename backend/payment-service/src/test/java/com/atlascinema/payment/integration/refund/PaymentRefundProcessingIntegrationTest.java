@@ -2,7 +2,10 @@
 package com.atlascinema.payment.integration.refund;
 
 import com.atlascinema.payment.domain.Payment;
+import com.atlascinema.payment.domain.PaymentOutboxEvent;
+import com.atlascinema.payment.domain.PaymentOutboxEventType;
 import com.atlascinema.payment.domain.PaymentStatus;
+import com.atlascinema.payment.event.PaymentRefundedEventPayload;
 import com.atlascinema.payment.integration.AbstractIntegrationTest;
 import com.atlascinema.payment.provider.PaymentProviderResult;
 import com.atlascinema.payment.provider.SimulatedPaymentProvider;
@@ -14,6 +17,7 @@ import com.atlascinema.payment.refund.service.PaymentRefundInboxService;
 import com.atlascinema.payment.refund.service.PaymentRefundProcessingService;
 import com.atlascinema.payment.refund.service.PaymentRefundTransactionService;
 import com.atlascinema.payment.refund.service.dto.PaymentRefundDetails;
+import com.atlascinema.payment.repository.PaymentOutboxRepository;
 import com.atlascinema.payment.repository.PaymentRepository;
 import com.atlascinema.payment.service.PaymentProcessingTransactionService;
 import org.junit.jupiter.api.Test;
@@ -23,6 +27,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +74,9 @@ class PaymentRefundProcessingIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private JsonMapper jsonMapper;
+
+    @Autowired
+    private PaymentOutboxRepository paymentOutboxRepository;
 
     @Test
     void processRefundRequest_shouldRefundPayment_whenChargeSucceeded() {
@@ -258,6 +266,94 @@ class PaymentRefundProcessingIntegrationTest extends AbstractIntegrationTest {
         assertThat(isInboxEventProcessed(eventId)).isFalse();
     }
 
+    @Test
+    void processRefundRequest_shouldCreateRefundedOutboxEvent() {
+        Payment payment = createSucceededPayment();
+
+        UUID refundRequestEventId = recordRefundRequest(
+                payment.getBookingId(),
+                payment.getId(),
+                payment.getProviderTransactionId());
+
+        refundProcessingService.processRefundRequest(refundRequestEventId);
+
+        Payment refundedPayment = paymentRepository
+                .findById(payment.getId())
+                .orElseThrow();
+
+        List<PaymentOutboxEvent> refundEvents =
+                paymentOutboxRepository.findAllByPaymentId(payment.getId())
+                        .stream()
+                        .filter(event ->
+                                event.getEventType() == PaymentOutboxEventType.PAYMENT_REFUNDED)
+                        .toList();
+
+        assertThat(refundedPayment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+
+        assertThat(isInboxEventProcessed(refundRequestEventId)).isTrue();
+
+        assertThat(refundEvents).hasSize(1);
+
+        PaymentOutboxEvent refundEvent = refundEvents.getFirst();
+
+        assertThat(refundEvent.getPublishedAt()).isNull();
+
+        PaymentRefundedEventPayload eventPayload = jsonMapper.readValue(
+                refundEvent.getPayload(),
+                PaymentRefundedEventPayload.class);
+
+        assertThat(eventPayload.eventId()).isEqualTo(refundEvent.getId());
+
+        assertThat(eventPayload.eventType()).isEqualTo(PaymentOutboxEventType.PAYMENT_REFUNDED);
+
+        assertThat(eventPayload.paymentId()).isEqualTo(payment.getId());
+
+        assertThat(eventPayload.bookingId()).isEqualTo(payment.getBookingId());
+
+        assertThat(eventPayload.amount()).isEqualByComparingTo(PAYMENT_AMOUNT);
+
+        assertThat(eventPayload.currencyCode()).isEqualTo(CURRENCY_CODE);
+
+        assertThat(eventPayload.providerTransactionId()).isEqualTo(payment.getProviderTransactionId());
+
+        assertThat(eventPayload.providerRefundTransactionId())
+                .isEqualTo(refundedPayment.getProviderRefundTransactionId());
+
+        assertThat(eventPayload.occurredAt()).isNotNull();
+    }
+
+    @Test
+    void processRefundRequest_shouldCreateOnlyOneRefundedEvent_forMultipleRequests() {
+        Payment payment = createSucceededPayment();
+
+        UUID firstEventId = recordRefundRequest(
+                payment.getBookingId(),
+                payment.getId(),
+                payment.getProviderTransactionId());
+
+        UUID secondEventId = recordRefundRequest(
+                payment.getBookingId(),
+                payment.getId(),
+                payment.getProviderTransactionId());
+
+        refundProcessingService.processRefundRequest(firstEventId);
+        refundProcessingService.processRefundRequest(secondEventId);
+
+        List<PaymentOutboxEvent> refundEvents = paymentOutboxRepository.findAllByPaymentId(payment.getId())
+                .stream()
+                .filter(event ->
+                        event.getEventType() == PaymentOutboxEventType.PAYMENT_REFUNDED
+                ).toList();
+
+        assertThat(refundEvents).hasSize(1);
+
+        assertThat(countProviderRefunds(payment.getId())).isEqualTo(1);
+
+        assertThat(isInboxEventProcessed(firstEventId)).isTrue();
+
+        assertThat(isInboxEventProcessed(secondEventId)).isTrue();
+    }
+
     private Payment createSucceededPayment() {
         Payment pendingPayment = Payment.initiateForBooking(
                 UUID.randomUUID(),
@@ -290,9 +386,9 @@ class PaymentRefundProcessingIntegrationTest extends AbstractIntegrationTest {
             String providerTransactionId
     ) {
         PaymentRefundRequestedPayload refundPayload = new PaymentRefundRequestedPayload(
-                        paymentId,
-                        providerTransactionId,
-                        "BOOKING_NOT_CONFIRMABLE");
+                paymentId,
+                providerTransactionId,
+                "BOOKING_NOT_CONFIRMABLE");
 
         BookingEventEnvelope bookingEvent = new BookingEventEnvelope(
                 UUID.randomUUID(),
@@ -312,10 +408,10 @@ class PaymentRefundProcessingIntegrationTest extends AbstractIntegrationTest {
     private long countProviderRefunds(UUID paymentId) {
         Long count = jdbcTemplate.queryForObject(
                 """
-                SELECT COUNT(*)
-                FROM simulated_provider_refunds
-                WHERE payment_id = ?
-                """,
+                        SELECT COUNT(*)
+                        FROM simulated_provider_refunds
+                        WHERE payment_id = ?
+                        """,
                 Long.class,
                 paymentId
         );
@@ -326,10 +422,10 @@ class PaymentRefundProcessingIntegrationTest extends AbstractIntegrationTest {
     private boolean isInboxEventProcessed(UUID eventId) {
         Boolean processed = jdbcTemplate.queryForObject(
                 """
-                SELECT processed_at IS NOT NULL
-                FROM payment_refund_inbox_events
-                WHERE event_id = ?
-                """,
+                        SELECT processed_at IS NOT NULL
+                        FROM payment_refund_inbox_events
+                        WHERE event_id = ?
+                        """,
                 Boolean.class,
                 eventId
         );
