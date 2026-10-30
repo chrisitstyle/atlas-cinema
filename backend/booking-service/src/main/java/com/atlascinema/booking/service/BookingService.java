@@ -18,6 +18,7 @@ import com.atlascinema.booking.exception.SeatAlreadyReservedException;
 import com.atlascinema.booking.exception.SeatNotFoundException;
 import com.atlascinema.booking.outbox.OutboxEventWriter;
 import com.atlascinema.booking.repository.BookingRepository;
+import com.atlascinema.booking.repository.ConfirmedSeatRepository;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +39,7 @@ import java.util.UUID;
 public class BookingService {
 
     private final BookingRepository bookingRepository;
+    private final ConfirmedSeatRepository confirmedSeatRepository;
     private final ScreeningClient screeningClient;
     private final CinemaClient cinemaClient;
     private final RedisSeatHoldService redisSeatHoldService;
@@ -78,6 +80,12 @@ public class BookingService {
          */
         LocalDateTime expiresAt = createdAt.plus(holdDuration);
 
+        // sold seats remain unavailable after their temporary Redis holds expire
+        if (confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
+                request.screeningId(), request.seatIds())) {
+            throw new SeatAlreadyReservedException(request.screeningId());
+        }
+
         List<UUID> acquiredSeatIds = new ArrayList<>();
 
         try {
@@ -93,6 +101,12 @@ public class BookingService {
                 }
 
                 acquiredSeatIds.add(seatId);
+            }
+
+            // recheck after acquiring Redis holds to narrow the confirmation race
+            if (confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
+                    request.screeningId(), request.seatIds())) {
+                throw new SeatAlreadyReservedException(request.screeningId());
             }
 
             booking.markAsHeld(expiresAt);
@@ -129,7 +143,7 @@ public class BookingService {
     @Transactional
     public BookingResponse cancelBooking(UUID bookingId) {
         Booking booking = bookingRepository
-                .findById(bookingId)
+                .findByIdForUpdate(bookingId)
                 .orElseThrow(() -> new BookingNotFoundException(bookingId));
 
         ScreeningClientResponse screening = getScreening(booking.getScreeningId());
