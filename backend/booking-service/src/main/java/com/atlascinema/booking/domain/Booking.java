@@ -49,6 +49,10 @@ public class Booking {
             scale = 2)
     private BigDecimal totalPrice;
 
+    // identifies the payment that permanently confirmed this booking
+    @Column(name = "confirmed_payment_id")
+    private UUID confirmedPaymentId;
+
     @OneToMany(mappedBy = "booking",
             cascade = CascadeType.ALL,
             orphanRemoval = true)
@@ -138,20 +142,23 @@ public class Booking {
         status = BookingStatus.CANCELLED;
     }
 
-    // confirm only a held booking whose booking deadline has not passed
-    public void markAsConfirmed(LocalDateTime confirmedAt) {
+    // Confirm a held booking and remember the payment responsible for the sale
+    public void markAsConfirmed(
+            LocalDateTime confirmedAt,
+            UUID paymentId
+    ) {
         Objects.requireNonNull(confirmedAt, "Confirmation time is required");
+        Objects.requireNonNull(paymentId, "Payment id is required");
 
         if (status != BookingStatus.HELD
                 || expiresAt == null
                 || !confirmedAt.isBefore(expiresAt)
                 || seats.isEmpty()) {
-            throw new IllegalStateException(
-                    "Booking %s cannot be confirmed".formatted(id)
-            );
+            throw new IllegalStateException("Booking %s cannot be confirmed".formatted(id));
         }
 
-        status = BookingStatus.CONFIRMED;
+        this.confirmedPaymentId = paymentId;
+        this.status = BookingStatus.CONFIRMED;
     }
 
     public void markAsExpired() {

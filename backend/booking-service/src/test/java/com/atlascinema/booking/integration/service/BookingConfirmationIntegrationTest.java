@@ -1,3 +1,4 @@
+
 package com.atlascinema.booking.integration.service;
 
 import com.atlascinema.booking.domain.Booking;
@@ -16,6 +17,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -28,10 +30,13 @@ import static org.mockito.Mockito.when;
 
 /*
  * Verifies permanent seat allocation using PostgreSQL and Redis
+ * Ensures confirmed bookings are associated with the correct payment
  */
 class BookingConfirmationIntegrationTest extends AbstractIntegrationTest {
 
     private static final Instant NOW = Instant.parse("2030-01-10T12:00:00Z");
+
+    private static final BigDecimal PRICE = new BigDecimal("29.90");
 
     @Autowired
     private BookingRepository bookingRepository;
@@ -58,33 +63,71 @@ class BookingConfirmationIntegrationTest extends AbstractIntegrationTest {
     void confirmPaidBooking_shouldPersistConfirmedSeats_whenBookingOwnsValidHolds() {
         UUID screeningId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        Booking booking = persistHeldBooking(screeningId, seatId, now().plusMinutes(10));
+        UUID paymentId = UUID.randomUUID();
+
+        Booking booking = persistHeldBooking(
+                screeningId,
+                seatId,
+                now().plusMinutes(10));
+
         assertThat(redisSeatHoldService.holdSeat(
-                screeningId, seatId, booking.getId(), java.time.Duration.ofMinutes(10)
+                screeningId,
+                seatId,
+                booking.getId(),
+                Duration.ofMinutes(10)
         )).isTrue();
 
         BookingResponse confirmedBooking = bookingConfirmationService.confirmPaidBooking(
-                booking.getId());
+                booking.getId(),
+                paymentId);
 
-        assertThat(confirmedBooking.status()).isEqualTo(BookingStatus.CONFIRMED);
-        assertThat(bookingRepository.findById(booking.getId()).orElseThrow().getStatus())
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(confirmedBooking.status())
                 .isEqualTo(BookingStatus.CONFIRMED);
+
+        assertThat(persistedBooking.getStatus())
+                .isEqualTo(BookingStatus.CONFIRMED);
+
+        // the booking must remember the payment responsible for confirmation
+        assertThat(persistedBooking.getConfirmedPaymentId()).isEqualTo(paymentId);
+
+        // seats must be permanently allocated in PostgreSQL
         assertThat(confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
-                screeningId, List.of(seatId)
+                screeningId,
+                List.of(seatId)
         )).isTrue();
+
+        assertThat(confirmedSeatRepository.count()).isEqualTo(1);
     }
 
     @Test
     void confirmPaidBooking_shouldRejectBooking_whenExpirationHasPassed() {
         UUID screeningId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        Booking booking = persistHeldBooking(screeningId, seatId, now().minusSeconds(1));
+        UUID paymentId = UUID.randomUUID();
 
-        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(booking.getId()))
-                .isInstanceOf(IllegalStateException.class);
+        Booking booking = persistHeldBooking(
+                screeningId,
+                seatId,
+                now().minusSeconds(1));
 
-        assertThat(bookingRepository.findById(booking.getId()).orElseThrow().getStatus())
+        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(booking.getId(),
+                paymentId)
+        ).isInstanceOf(IllegalStateException.class);
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
                 .isEqualTo(BookingStatus.HELD);
+
+        // an expired booking must not be associated with a payment
+        assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
+
         assertThat(confirmedSeatRepository.count()).isZero();
     }
 
@@ -92,14 +135,31 @@ class BookingConfirmationIntegrationTest extends AbstractIntegrationTest {
     void confirmPaidBooking_shouldRejectBooking_whenRedisHoldIsMissing() {
         UUID screeningId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        Booking booking = persistHeldBooking(screeningId, seatId, now().plusMinutes(10));
+        UUID paymentId = UUID.randomUUID();
 
-        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(booking.getId()))
+        Booking booking = persistHeldBooking(
+                screeningId,
+                seatId,
+                now().plusMinutes(10));
+
+        // no Redis hold is created for this booking
+        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(
+                booking.getId(),
+                paymentId)
+        )
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Redis seat holds");
 
-        assertThat(bookingRepository.findById(booking.getId()).orElseThrow().getStatus())
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        // the transaction must roll back the attempted confirmation
+        assertThat(persistedBooking.getStatus())
                 .isEqualTo(BookingStatus.HELD);
+
+        assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
+
         assertThat(confirmedSeatRepository.count()).isZero();
     }
 
@@ -107,26 +167,77 @@ class BookingConfirmationIntegrationTest extends AbstractIntegrationTest {
     void confirmPaidBooking_shouldRollback_whenSeatWasAlreadySold() {
         UUID screeningId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        Booking firstBooking = persistHeldBooking(screeningId, seatId, now().plusMinutes(10));
-        Booking secondBooking = persistHeldBooking(screeningId, seatId, now().plusMinutes(10));
 
+        UUID firstPaymentId = UUID.randomUUID();
+        UUID secondPaymentId = UUID.randomUUID();
+
+        Booking firstBooking = persistHeldBooking(
+                screeningId,
+                seatId,
+                now().plusMinutes(10));
+
+        Booking secondBooking = persistHeldBooking(
+                screeningId,
+                seatId,
+                now().plusMinutes(10));
+
+        // the first booking acquires the temporary hold
         assertThat(redisSeatHoldService.holdSeat(
-                screeningId, seatId, firstBooking.getId(), java.time.Duration.ofMinutes(10)
+                screeningId,
+                seatId,
+                firstBooking.getId(),
+                Duration.ofMinutes(10)
         )).isTrue();
 
-        bookingConfirmationService.confirmPaidBooking(firstBooking.getId());
+        // the first payment confirms the booking and permanently sells the seat
+        bookingConfirmationService.confirmPaidBooking(
+                firstBooking.getId(),
+                firstPaymentId);
 
+        Booking confirmedFirstBooking = bookingRepository
+                .findById(firstBooking.getId())
+                .orElseThrow();
+
+        assertThat(confirmedFirstBooking.getStatus())
+                .isEqualTo(BookingStatus.CONFIRMED);
+
+        assertThat(confirmedFirstBooking.getConfirmedPaymentId())
+                .isEqualTo(firstPaymentId);
+
+        // simulate the Redis hold being released after confirmation
         redisSeatHoldService.releaseSeat(screeningId, seatId, firstBooking.getId());
+
+        // Redis may allow another temporary hold for the same seat
         assertThat(redisSeatHoldService.holdSeat(
-                screeningId, seatId, secondBooking.getId(), java.time.Duration.ofMinutes(10)
+                screeningId,
+                seatId,
+                secondBooking.getId(),
+                Duration.ofMinutes(10)
         )).isTrue();
 
-        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(secondBooking.getId()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+        // PostgreSQL must prevent selling the same seat again
+        assertThatThrownBy(() -> bookingConfirmationService.confirmPaidBooking(
+                secondBooking.getId(),
+                secondPaymentId)
+        ).isInstanceOf(DataIntegrityViolationException.class);
 
-        assertThat(bookingRepository.findById(secondBooking.getId()).orElseThrow().getStatus())
-                .isEqualTo(BookingStatus.HELD);
+        Booking persistedSecondBooking = bookingRepository
+                .findById(secondBooking.getId())
+                .orElseThrow();
+
+        // the failed transaction must preserve the previous booking state
+        assertThat(persistedSecondBooking.getStatus()).isEqualTo(BookingStatus.HELD);
+
+        assertThat(persistedSecondBooking.getConfirmedPaymentId()).isNull();
+
+        // only the first booking may own the permanently sold seat
         assertThat(confirmedSeatRepository.count()).isEqualTo(1);
+
+        Booking persistedFirstBooking = bookingRepository
+                .findById(firstBooking.getId())
+                .orElseThrow();
+
+        assertThat(persistedFirstBooking.getConfirmedPaymentId()).isEqualTo(firstPaymentId);
     }
 
     private Booking persistHeldBooking(
@@ -135,9 +246,14 @@ class BookingConfirmationIntegrationTest extends AbstractIntegrationTest {
             LocalDateTime expiresAt
     ) {
         Booking booking = Booking.create(
-                null, "guest@example.com", screeningId, now().minusMinutes(1));
-        booking.addSeat(seatId, new BigDecimal("29.90"));
+                null,
+                "guest@example.com",
+                screeningId,
+                now().minusMinutes(1));
+
+        booking.addSeat(seatId, PRICE);
         booking.markAsHeld(expiresAt);
+
         return bookingRepository.saveAndFlush(booking);
     }
 

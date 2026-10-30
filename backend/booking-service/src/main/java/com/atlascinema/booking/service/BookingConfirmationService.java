@@ -14,11 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /*
- * Atomically confirms a held booking and permanently assigns its seats
- * Must only be called after the payment event has been validated
+ * Atomically confirms a paid booking and permanently assigns its seats
+ * Records the payment responsible for confirming the booking
  */
 @Service
 @RequiredArgsConstructor
@@ -30,24 +31,34 @@ public class BookingConfirmationService {
     private final Clock clock;
 
     @Transactional
-    public BookingResponse confirmPaidBooking(UUID bookingId) {
+    public BookingResponse confirmPaidBooking(
+            UUID bookingId,
+            UUID paymentId
+    ) {
+        Objects.requireNonNull(bookingId, "Booking id is required");
+        Objects.requireNonNull(paymentId, "Payment id is required");
+
         Booking booking = bookingRepository.findByIdForUpdate(bookingId)
                 .orElseThrow(() -> new BookingNotFoundException(bookingId));
 
         LocalDateTime confirmedAt = LocalDateTime.now(clock);
 
-        // check booking state and expiry before allocating permanent seats
-        booking.markAsConfirmed(confirmedAt);
+        // validate booking status and deadline before allocating seats
+        booking.markAsConfirmed(confirmedAt, paymentId);
 
         List<UUID> seatIds = booking.getSeats().stream()
                 .map(BookingSeat::getSeatId)
                 .toList();
 
-        // an expired or transferred Redis hold cannot be converted to a sale
+        // expired or transferred Redis holds cannot be converted into sales
         if (!redisSeatHoldService.areSeatsHeldByBooking(
-                booking.getScreeningId(), seatIds, bookingId)) {
+                booking.getScreeningId(),
+                seatIds,
+                bookingId
+        )) {
             throw new IllegalStateException(
-                    "Booking %s no longer owns all Redis seat holds".formatted(bookingId));
+                    "Booking %s no longer owns all Redis seat holds"
+                            .formatted(bookingId));
         }
 
         List<ConfirmedSeat> permanentSeats = seatIds.stream()
@@ -55,12 +66,10 @@ public class BookingConfirmationService {
                         bookingId,
                         booking.getScreeningId(),
                         seatId,
-                        confirmedAt
-                ))
+                        confirmedAt))
                 .toList();
 
-        // A unique index on (screening_id, seat_id) is the final sales guard
-        // An insert conflict rolls back both the permanent seats and CONFIRMED
+        // PostgreSQL unique constraints protect permanent seat ownership
         confirmedSeatRepository.saveAllAndFlush(permanentSeats);
 
         return BookingResponse.from(booking);
