@@ -137,9 +137,8 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void processEvent_shouldCancelBooking_whenPaymentFails() {
-        Booking booking = createHeldBooking(
-                now().plusMinutes(10));
+    void processEvent_shouldKeepBookingHeld_whenPaymentFails() {
+        Booking booking = createHeldBooking(now().plusMinutes(10));
 
         UUID seatId = booking.getSeats().getFirst().getSeatId();
 
@@ -150,14 +149,12 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 Duration.ofMinutes(10)
         )).isTrue();
 
-        PaymentResultEvent paymentEvent = createPaymentEvent(
-                booking,
+        PaymentResultEvent failedPayment = createPaymentEvent(booking,
                 PaymentResultEventType.PAYMENT_FAILED);
 
-        recordEvent(paymentEvent);
+        recordEvent(failedPayment);
 
-        boolean processed = bookingPaymentResultService.processEvent(
-                paymentEvent.eventId());
+        boolean processed = bookingPaymentResultService.processEvent(failedPayment.eventId());
 
         assertThat(processed).isTrue();
 
@@ -165,25 +162,22 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 .findById(booking.getId())
                 .orElseThrow();
 
-        assertThat(persistedBooking.getStatus())
-                .isEqualTo(BookingStatus.CANCELLED);
+        assertThat(persistedBooking.getStatus()).isEqualTo(BookingStatus.HELD);
 
         assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
 
-        assertThat(confirmedSeatRepository.count()).isZero();
-
-        assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
-
+        // failed payment must not release the hold before booking expiration
         assertThat(redisSeatHoldService.areSeatsHeldByBooking(
                 booking.getScreeningId(),
                 List.of(seatId),
                 booking.getId()
-        )).isFalse();
+        )).isTrue();
 
-        assertThat(outboxEventRepository.findAll())
-                .singleElement()
-                .extracting(OutboxEvent::getEventType)
-                .isEqualTo("BookingCancelled");
+        assertThat(confirmedSeatRepository.count()).isZero();
+
+        assertThat(isEventProcessed(failedPayment.eventId())).isTrue();
+
+        assertThat(outboxEventRepository.count()).isZero();
     }
 
     @Test
@@ -227,6 +221,112 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(message.payload().path("reason").asText())
                 .isEqualTo("BOOKING_NOT_CONFIRMABLE");
+    }
+
+    @Test
+    void processEvent_shouldConfirmBooking_whenSecondPaymentSucceedsAfterFirstFailure() {
+        Booking booking = createHeldBooking(now().plusMinutes(10));
+
+        UUID seatId = booking.getSeats().getFirst().getSeatId();
+
+        assertThat(redisSeatHoldService.holdSeat(
+                booking.getScreeningId(),
+                seatId,
+                booking.getId(),
+                Duration.ofMinutes(10)
+        )).isTrue();
+
+        PaymentResultEvent failedPayment = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_FAILED);
+
+        PaymentResultEvent successfulPayment = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_SUCCEEDED);
+
+        recordEvent(failedPayment);
+        recordEvent(successfulPayment);
+
+        bookingPaymentResultService.processEvent(failedPayment.eventId());
+
+        // the failed attempt cannot cancel the booking
+        assertThat(bookingRepository.findById(booking.getId())
+                .orElseThrow()
+                .getStatus())
+                .isEqualTo(BookingStatus.HELD);
+
+        bookingPaymentResultService.processEvent(successfulPayment.eventId());
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
+
+        assertThat(persistedBooking.getConfirmedPaymentId())
+                .isEqualTo(successfulPayment.paymentId());
+
+        assertThat(confirmedSeatRepository.count()).isEqualTo(1);
+
+        assertThat(isEventProcessed(failedPayment.eventId())).isTrue();
+
+        assertThat(isEventProcessed(successfulPayment.eventId())).isTrue();
+
+        // Only the successful payment funds the booking
+        // Neither payment requires compensation
+        assertThat(outboxEventRepository.count())
+                .isZero();
+    }
+
+    @Test
+    void processEvent_shouldKeepBookingConfirmed_whenFailedPaymentArrivesAfterSuccess() {
+        Booking booking = createHeldBooking(now().plusMinutes(10));
+
+        UUID seatId = booking.getSeats().getFirst().getSeatId();
+
+        assertThat(redisSeatHoldService.holdSeat(
+                booking.getScreeningId(),
+                seatId,
+                booking.getId(),
+                Duration.ofMinutes(10)
+        )).isTrue();
+
+        PaymentResultEvent successfulPayment = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_SUCCEEDED);
+
+        PaymentResultEvent failedPayment = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_FAILED);
+
+        recordEvent(successfulPayment);
+        recordEvent(failedPayment);
+
+        bookingPaymentResultService.processEvent(successfulPayment.eventId());
+
+        bookingPaymentResultService.processEvent(failedPayment.eventId());
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
+                .isEqualTo(BookingStatus.CONFIRMED);
+
+        assertThat(persistedBooking.getConfirmedPaymentId())
+                .isEqualTo(successfulPayment.paymentId());
+
+        assertThat(confirmedSeatRepository.count())
+                .isEqualTo(1);
+
+        assertThat(isEventProcessed(successfulPayment.eventId()))
+                .isTrue();
+
+        assertThat(isEventProcessed(failedPayment.eventId()))
+                .isTrue();
+
+        // a different failed attempt cannot undo a successful booking
+        assertThat(outboxEventRepository.count()).isZero();
     }
 
     @Test

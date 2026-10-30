@@ -4,7 +4,6 @@ package com.atlascinema.booking.payment.service;
 import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingSeat;
 import com.atlascinema.booking.domain.BookingStatus;
-import com.atlascinema.booking.event.BookingCancelledEvent;
 import com.atlascinema.booking.event.BookingSeatHoldsReleaseRequested;
 import com.atlascinema.booking.exception.BookingNotFoundException;
 import com.atlascinema.booking.outbox.OutboxEventWriter;
@@ -28,7 +27,7 @@ import java.util.UUID;
 
 /*
  * Applies payment outcomes to bookings and records compensation requests
- * The booking decision, outbox writes and inbox completion are transactional
+ * A failed payment attempt does not cancel a booking awaiting other attempts
  */
 @Service
 @RequiredArgsConstructor
@@ -56,39 +55,42 @@ public class BookingPaymentResultService {
             return false;
         }
 
-        PaymentResultEvent paymentEvent = jsonMapper.readValue(inboxEvent.payload(), PaymentResultEvent.class);
+        PaymentResultEvent paymentEvent = jsonMapper.readValue(
+                inboxEvent.payload(),
+                PaymentResultEvent.class);
 
         if (!eventId.equals(paymentEvent.eventId())) {
             throw new IllegalStateException("Inbox event id does not match the stored payload");
         }
 
-        // Lock the booking to serialize payment handling with cancellation
-        // and expiration
+        // lock the booking to serialize payment handling with other state changes
         Booking booking = bookingRepository
                 .findByIdForUpdate(paymentEvent.bookingId())
-                .orElseThrow(() -> new BookingNotFoundException(paymentEvent.bookingId()));
+                .orElseThrow(() ->
+                        new BookingNotFoundException(paymentEvent.bookingId()));
 
         validatePaymentAmount(booking, paymentEvent);
 
-        Instant occurredAt = clock.instant();
-        LocalDateTime now = LocalDateTime.ofInstant(occurredAt, clock.getZone());
+        Instant processedAt = clock.instant();
+
+        LocalDateTime now = LocalDateTime.ofInstant(processedAt, clock.getZone());
 
         switch (paymentEvent.eventType()) {
             case PAYMENT_SUCCEEDED -> handleSuccessfulPayment(
                             booking,
                             paymentEvent,
-                            occurredAt,
+                            processedAt,
                             now);
 
-            case PAYMENT_FAILED -> handleFailedPayment(
-                            booking,
-                            occurredAt,
-                            now);
+            case PAYMENT_FAILED -> {
+                // The failed attempt is recorded in the inbox
+                // The booking stays HELD so other attempts can still succeed
+                // BookingExpirationScheduler handles expiration when TTL ends
+            }
         }
 
-        // Mark the event processed only after all business writes succeed
-        // The whole transaction rolls back if any operation fails
-        paymentInboxRepository.markAsProcessed(eventId, occurredAt);
+        // The business decision and inbox completion commit together
+        paymentInboxRepository.markAsProcessed(eventId, processedAt);
 
         return true;
     }
@@ -99,7 +101,7 @@ public class BookingPaymentResultService {
             Instant occurredAt,
             LocalDateTime now
     ) {
-        // a previously confirmed booking may receive the same payment result again
+        // the payment that already confirmed this booking needs no refund
         if (booking.getStatus() == BookingStatus.CONFIRMED
                 && paymentEvent.paymentId().equals(
                 booking.getConfirmedPaymentId()
@@ -108,47 +110,23 @@ public class BookingPaymentResultService {
         }
 
         if (!canConfirmBooking(booking, now)) {
-            // A different successful payment must be refunded
-            // This also covers expired or cancelled bookings
+            // an additional or late successful payment must be compensated
             outboxEventWriter.savePaymentRefundRequested(
                     booking.getId(),
                     paymentEvent.paymentId(),
                     paymentEvent.providerTransactionId(),
                     occurredAt,
-                    now
-            );
+                    now);
 
             return;
         }
 
-        // permanently assign the seats to this specific payment
-        bookingConfirmationService.confirmPaidBooking(booking.getId(), paymentEvent.paymentId());
-
-        // Redis cleanup occurs only after the transaction commits
-        requestSeatHoldRelease(booking);
-    }
-
-    private void handleFailedPayment(
-            Booking booking,
-            Instant occurredAt,
-            LocalDateTime now
-    ) {
-        if (booking.getStatus() != BookingStatus.HELD) {
-            return;
-        }
-
-        booking.cancelAfterPaymentFailure();
-
-        BookingCancelledEvent cancelledEvent = new BookingCancelledEvent(
-                UUID.randomUUID(),
+        bookingConfirmationService.confirmPaidBooking(
                 booking.getId(),
-                booking.getCustomerId(),
-                booking.getContactEmail(),
-                booking.getScreeningId(),
-                occurredAt);
+                paymentEvent.paymentId()
+        );
 
-        outboxEventWriter.saveCancelled(cancelledEvent, now);
-
+        // release temporary holds only after the database transaction commits
         requestSeatHoldRelease(booking);
     }
 
@@ -167,7 +145,7 @@ public class BookingPaymentResultService {
                 .map(BookingSeat::getSeatId)
                 .toList();
 
-        // a permanent seat allocation always wins over a temporary hold
+        // a permanently sold seat cannot be sold again
         if (confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
                 booking.getScreeningId(),
                 seatIds
@@ -175,7 +153,7 @@ public class BookingPaymentResultService {
             return false;
         }
 
-        // a missing or transferred hold makes confirmation unsafe
+        // all temporary holds must still belong to this booking
         return redisSeatHoldService.areSeatsHeldByBooking(
                 booking.getScreeningId(),
                 seatIds,
@@ -187,7 +165,8 @@ public class BookingPaymentResultService {
                 .map(BookingSeat::getSeatId)
                 .toList();
 
-        applicationEventPublisher.publishEvent(new BookingSeatHoldsReleaseRequested(
+        applicationEventPublisher.publishEvent(
+                new BookingSeatHoldsReleaseRequested(
                         booking.getId(),
                         booking.getScreeningId(),
                         seatIds));
