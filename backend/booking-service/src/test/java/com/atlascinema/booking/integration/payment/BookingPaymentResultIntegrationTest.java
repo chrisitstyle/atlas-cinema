@@ -27,14 +27,20 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 /*
  * Verifies payment saga decisions with real PostgreSQL and Redis
- * Inbox completion and booking changes must commit together
+ * Ensures booking changes, inbox processing and refunds remain consistent
  */
 class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
 
@@ -78,6 +84,7 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
     @Test
     void processEvent_shouldConfirmBooking_whenPaymentSucceedsAndHoldsAreValid() {
         Booking booking = createHeldBooking(now().plusMinutes(10));
+
         UUID seatId = booking.getSeats().getFirst().getSeatId();
 
         assertThat(redisSeatHoldService.holdSeat(
@@ -93,35 +100,47 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
 
         recordEvent(paymentEvent);
 
-        boolean processed = bookingPaymentResultService.processEvent(paymentEvent.eventId());
+        boolean processed = bookingPaymentResultService.processEvent(
+                paymentEvent.eventId());
 
         assertThat(processed).isTrue();
 
-        assertThat(bookingRepository.findById(booking.getId())
-                .orElseThrow()
-                .getStatus())
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
                 .isEqualTo(BookingStatus.CONFIRMED);
+
+        // the booking must reference the payment that confirmed it
+        assertThat(persistedBooking.getConfirmedPaymentId())
+                .isEqualTo(paymentEvent.paymentId());
 
         assertThat(confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
                 booking.getScreeningId(),
-                java.util.List.of(seatId)
+                List.of(seatId)
         )).isTrue();
 
+        assertThat(confirmedSeatRepository.count()).isEqualTo(1);
+
         assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
+
         assertThat(outboxEventRepository.count()).isZero();
 
-        // Confirmed seats remain permanently protected by PostgreSQL
+        // Permanent seats are protected by PostgreSQL
         // Temporary Redis holds are released after commit
         assertThat(redisSeatHoldService.areSeatsHeldByBooking(
                 booking.getScreeningId(),
-                java.util.List.of(seatId),
+                List.of(seatId),
                 booking.getId()
         )).isFalse();
     }
 
     @Test
     void processEvent_shouldCancelBooking_whenPaymentFails() {
-        Booking booking = createHeldBooking(now().plusMinutes(10));
+        Booking booking = createHeldBooking(
+                now().plusMinutes(10));
+
         UUID seatId = booking.getSeats().getFirst().getSeatId();
 
         assertThat(redisSeatHoldService.holdSeat(
@@ -136,19 +155,28 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 PaymentResultEventType.PAYMENT_FAILED);
 
         recordEvent(paymentEvent);
-        bookingPaymentResultService.processEvent(paymentEvent.eventId());
 
-        assertThat(bookingRepository.findById(booking.getId())
-                .orElseThrow()
-                .getStatus())
+        boolean processed = bookingPaymentResultService.processEvent(
+                paymentEvent.eventId());
+
+        assertThat(processed).isTrue();
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
                 .isEqualTo(BookingStatus.CANCELLED);
 
+        assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
+
         assertThat(confirmedSeatRepository.count()).isZero();
+
         assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
 
         assertThat(redisSeatHoldService.areSeatsHeldByBooking(
                 booking.getScreeningId(),
-                java.util.List.of(seatId),
+                List.of(seatId),
                 booking.getId()
         )).isFalse();
 
@@ -167,9 +195,19 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 PaymentResultEventType.PAYMENT_SUCCEEDED);
 
         recordEvent(paymentEvent);
-        bookingPaymentResultService.processEvent(paymentEvent.eventId());
+
+        boolean processed = bookingPaymentResultService.processEvent(paymentEvent.eventId());
+
+        assertThat(processed).isTrue();
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
 
         assertThat(confirmedSeatRepository.count()).isZero();
+
         assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
 
         OutboxEvent refundEvent = outboxEventRepository
@@ -201,40 +239,226 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
 
         recordEvent(paymentEvent);
 
-        boolean firstResult = bookingPaymentResultService.processEvent(paymentEvent.eventId());
+        boolean firstResult = bookingPaymentResultService.processEvent(
+                paymentEvent.eventId());
 
-        boolean secondResult = bookingPaymentResultService.processEvent(paymentEvent.eventId());
+        boolean secondResult = bookingPaymentResultService.processEvent(
+                paymentEvent.eventId());
 
         assertThat(firstResult).isTrue();
         assertThat(secondResult).isFalse();
 
-        // only one refund request may be created for this inbox event
+        // the same inbox event must create only one refund request
         assertThat(outboxEventRepository.count()).isEqualTo(1);
+
+        assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
     }
 
     @Test
     void processEvent_shouldRequestRefund_whenRedisHoldIsMissing() {
-        Booking booking = createHeldBooking(now().plusMinutes(10));
+        Booking booking = createHeldBooking(
+                now().plusMinutes(10));
 
         PaymentResultEvent paymentEvent = createPaymentEvent(
                 booking,
                 PaymentResultEventType.PAYMENT_SUCCEEDED);
 
         recordEvent(paymentEvent);
-        bookingPaymentResultService.processEvent(paymentEvent.eventId());
 
-        assertThat(bookingRepository.findById(booking.getId())
-                .orElseThrow()
-                .getStatus())
+        boolean processed = bookingPaymentResultService.processEvent(
+                paymentEvent.eventId());
+
+        assertThat(processed).isTrue();
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
                 .isEqualTo(BookingStatus.HELD);
 
+        assertThat(persistedBooking.getConfirmedPaymentId()).isNull();
+
         assertThat(confirmedSeatRepository.count()).isZero();
+
         assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
 
         assertThat(outboxEventRepository.findAll())
                 .singleElement()
                 .extracting(OutboxEvent::getEventType)
                 .isEqualTo("PaymentRefundRequested");
+    }
+
+    @Test
+    void processEvent_shouldConfirmOnePaymentAndRefundTheOther_whenTwoPaymentsSucceedConcurrently()
+            throws Exception {
+
+        Booking booking = createHeldBooking(now().plusMinutes(10));
+
+        UUID seatId = booking.getSeats().getFirst().getSeatId();
+
+        assertThat(redisSeatHoldService.holdSeat(
+                booking.getScreeningId(),
+                seatId,
+                booking.getId(),
+                Duration.ofMinutes(10)
+        )).isTrue();
+
+        PaymentResultEvent firstPaymentEvent = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_SUCCEEDED);
+
+        PaymentResultEvent secondPaymentEvent = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_SUCCEEDED);
+
+        // both events belong to the same booking but different payments
+        assertThat(firstPaymentEvent.paymentId())
+                .isNotEqualTo(secondPaymentEvent.paymentId());
+
+        recordEvent(firstPaymentEvent);
+        recordEvent(secondPaymentEvent);
+
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch startProcessing = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+
+            Future<Boolean> firstResult = executor.submit(() -> {
+                workersReady.countDown();
+
+                if (!startProcessing.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("First payment worker did not start");
+                }
+
+                return bookingPaymentResultService.processEvent(
+                        firstPaymentEvent.eventId());
+            });
+
+            Future<Boolean> secondResult = executor.submit(() -> {
+                workersReady.countDown();
+
+                if (!startProcessing.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("Second payment worker did not start");
+                }
+
+                return bookingPaymentResultService.processEvent(
+                        secondPaymentEvent.eventId());
+            });
+
+            try {
+                assertThat(workersReady.await(10, TimeUnit.SECONDS)).isTrue();
+
+                // allow both workers to start processing concurrently
+                startProcessing.countDown();
+
+                assertThat(firstResult.get(20, TimeUnit.SECONDS))
+                        .isTrue();
+
+                assertThat(secondResult.get(20, TimeUnit.SECONDS))
+                        .isTrue();
+
+            } finally {
+                startProcessing.countDown();
+            }
+        }
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus())
+                .isEqualTo(BookingStatus.CONFIRMED);
+
+        UUID confirmedPaymentId = persistedBooking.getConfirmedPaymentId();
+
+        // Either payment may win the race
+        assertThat(confirmedPaymentId)
+                .isIn(firstPaymentEvent.paymentId(),
+                        secondPaymentEvent.paymentId());
+
+        // both payment events must be marked as processed
+        assertThat(isEventProcessed(firstPaymentEvent.eventId())).isTrue();
+
+        assertThat(isEventProcessed(secondPaymentEvent.eventId())).isTrue();
+
+        // only one permanent seat allocation must exist
+        assertThat(confirmedSeatRepository.count()).isEqualTo(1);
+
+        List<OutboxEvent> refundEvents = outboxEventRepository
+                .findAll()
+                .stream()
+                .filter(event ->
+                        "PaymentRefundRequested".equals(
+                                event.getEventType())).toList();
+
+        // exactly one successful payment must be refunded
+        assertThat(refundEvents).hasSize(1);
+
+        UUID paymentToRefund = confirmedPaymentId.equals(firstPaymentEvent.paymentId())
+                        ? secondPaymentEvent.paymentId()
+                        : firstPaymentEvent.paymentId();
+
+        BookingEventMessage refundMessage = jsonMapper.readValue(
+                refundEvents.getFirst().getPayload(),
+                BookingEventMessage.class);
+
+        assertThat(refundMessage.bookingId()).isEqualTo(booking.getId());
+
+        assertThat(refundMessage.payload().path("paymentId").asText())
+                .isEqualTo(paymentToRefund.toString());
+
+        assertThat(
+                refundMessage.payload().path("providerTransactionId").asText()
+        ).isEqualTo("SIM-" + paymentToRefund);
+    }
+
+    @Test
+    void processEvent_shouldNotRefundConfirmedPayment_whenSameEventIsProcessedAgain() {
+        Booking booking = createHeldBooking(now().plusMinutes(10));
+
+        UUID seatId = booking.getSeats().getFirst().getSeatId();
+
+        assertThat(redisSeatHoldService.holdSeat(
+                booking.getScreeningId(),
+                seatId,
+                booking.getId(),
+                Duration.ofMinutes(10)
+        )).isTrue();
+
+        PaymentResultEvent paymentEvent = createPaymentEvent(
+                booking,
+                PaymentResultEventType.PAYMENT_SUCCEEDED);
+
+        recordEvent(paymentEvent);
+
+        boolean firstProcessing = bookingPaymentResultService.processEvent(
+                        paymentEvent.eventId());
+
+        boolean repeatedProcessing = bookingPaymentResultService.processEvent(
+                        paymentEvent.eventId());
+
+        assertThat(firstProcessing).isTrue();
+
+        assertThat(repeatedProcessing).isFalse();
+
+        Booking persistedBooking = bookingRepository
+                .findById(booking.getId())
+                .orElseThrow();
+
+        assertThat(persistedBooking.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
+
+        assertThat(persistedBooking.getConfirmedPaymentId())
+                .isEqualTo(paymentEvent.paymentId());
+
+        assertThat(confirmedSeatRepository.count()).isEqualTo(1);
+
+        assertThat(isEventProcessed(paymentEvent.eventId())).isTrue();
+
+        // reprocessing the successful payment must not request a refund
+        assertThat(outboxEventRepository.findAll())
+                .noneMatch(event -> "PaymentRefundRequested".equals(
+                                event.getEventType()));
     }
 
     private Booking createHeldBooking(LocalDateTime expiresAt) {
@@ -245,12 +469,16 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 now().minusMinutes(1));
 
         booking.addSeat(UUID.randomUUID(), PRICE);
+
         booking.markAsHeld(expiresAt);
 
         return bookingRepository.saveAndFlush(booking);
     }
 
-    private PaymentResultEvent createPaymentEvent(Booking booking, PaymentResultEventType eventType) {
+    private PaymentResultEvent createPaymentEvent(
+            Booking booking,
+            PaymentResultEventType eventType
+    ) {
         UUID paymentId = UUID.randomUUID();
 
         return new PaymentResultEvent(
@@ -265,9 +493,12 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
     }
 
     private void recordEvent(PaymentResultEvent paymentEvent) {
-        paymentInboxService.recordPaymentResult(
+        boolean recorded = paymentInboxService.recordPaymentResult(
                 paymentEvent,
-                jsonMapper.writeValueAsString(paymentEvent));
+                jsonMapper.writeValueAsString(paymentEvent)
+        );
+
+        assertThat(recorded).isTrue();
     }
 
     private boolean isEventProcessed(UUID eventId) {

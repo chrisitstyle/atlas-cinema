@@ -99,22 +99,32 @@ public class BookingPaymentResultService {
             Instant occurredAt,
             LocalDateTime now
     ) {
+        // a previously confirmed booking may receive the same payment result again
+        if (booking.getStatus() == BookingStatus.CONFIRMED
+                && paymentEvent.paymentId().equals(
+                booking.getConfirmedPaymentId()
+        )) {
+            return;
+        }
+
         if (!canConfirmBooking(booking, now)) {
-            // never discard a successful payment without recording compensation
+            // A different successful payment must be refunded
+            // This also covers expired or cancelled bookings
             outboxEventWriter.savePaymentRefundRequested(
                     booking.getId(),
                     paymentEvent.paymentId(),
                     paymentEvent.providerTransactionId(),
                     occurredAt,
-                    now);
+                    now
+            );
 
             return;
         }
 
-        bookingConfirmationService.confirmPaidBooking(booking.getId());
+        // permanently assign the seats to this specific payment
+        bookingConfirmationService.confirmPaidBooking(booking.getId(), paymentEvent.paymentId());
 
-        // Confirmed seats are now protected by PostgreSQL
-        // The Redis holds can be removed safely after commit
+        // Redis cleanup occurs only after the transaction commits
         requestSeatHoldRelease(booking);
     }
 
