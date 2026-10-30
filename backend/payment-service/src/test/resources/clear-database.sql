@@ -1,3 +1,4 @@
 TRUNCATE TABLE payments;
 TRUNCATE TABLE simulated_provider_transactions;
 TRUNCATE TABLE payment_outbox_events;
+TRUNCATE TABLE payment_refund_inbox_events
