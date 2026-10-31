@@ -325,6 +325,9 @@ services:
       EUREKA_URL: http://discovery-server:8761/eureka/
       EUREKA_PREFER_IP: "true"
 
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
     depends_on:
       - discovery-server
       - movie-service
