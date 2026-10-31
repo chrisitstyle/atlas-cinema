@@ -126,6 +126,9 @@ services:
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
 
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
     depends_on:
       discovery-server:
         condition: service_started
