@@ -1,0 +1,26 @@
+# Gradle cache
+.gradle/
+
+# Build outputs
+build/
+out/
+
+# Java
+*.class
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Logs
+*.log
+logs/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Operating system files
+.DS_Store
+Thumbs.db
