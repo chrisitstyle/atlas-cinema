@@ -2,29 +2,37 @@
 package com.atlascinema.payment.integration.service;
 
 import com.atlascinema.payment.domain.Payment;
+import com.atlascinema.payment.domain.PaymentOutboxEventType;
 import com.atlascinema.payment.domain.PaymentStatus;
 import com.atlascinema.payment.exception.PaymentNotFoundException;
 import com.atlascinema.payment.integration.AbstractIntegrationTest;
 import com.atlascinema.payment.provider.PaymentProviderOutcome;
 import com.atlascinema.payment.provider.PaymentProviderResult;
 import com.atlascinema.payment.provider.SimulatedPaymentProvider;
+import com.atlascinema.payment.repository.PaymentOutboxRepository;
 import com.atlascinema.payment.repository.PaymentRepository;
 import com.atlascinema.payment.repository.SimulatedProviderTransactionRepository;
 import com.atlascinema.payment.service.PaymentProcessingTransactionService;
 import com.atlascinema.payment.service.PaymentReconciliationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /*
  * Verifies recovery of interrupted payments using real PostgreSQL
- * Provider results are stored separately from the payment status
+ * Provider charges and payment outbox results must remain idempotent
  */
 class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
@@ -38,6 +46,9 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
     private PaymentRepository paymentRepository;
 
     @Autowired
+    private PaymentOutboxRepository paymentOutboxRepository;
+
+    @Autowired
     private SimulatedProviderTransactionRepository simulatedProviderTransactionRepository;
 
     @Autowired
@@ -46,6 +57,9 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     private PaymentReconciliationService paymentReconciliationService;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     @Test
     void reconcilePayment_shouldRecoverSucceededPayment_whenProviderApprovedCharge() {
         Payment pendingPayment = persistPendingPayment();
@@ -53,29 +67,34 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
         paymentProcessingTransactionService.startProcessing(paymentId);
 
-        // simulate a successful provider charge without updating the payment
+        // provider charged the customer but the local completion did not commit
         createSimulatedProvider("APPROVED").charge(
                 paymentId,
                 PAYMENT_AMOUNT,
                 CURRENCY_CODE);
 
-        Payment paymentBeforeRecovery = paymentRepository.findById(paymentId).orElseThrow();
+        Payment paymentBeforeRecovery = paymentRepository
+                .findById(paymentId)
+                .orElseThrow();
 
-        assertThat(paymentBeforeRecovery.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
-
-        assertThat(paymentBeforeRecovery.getProviderTransactionId()).isNull();
+        assertThat(paymentBeforeRecovery.getStatus())
+                .isEqualTo(PaymentStatus.PROCESSING);
 
         Payment recoveredPayment = paymentReconciliationService.reconcilePayment(paymentId);
 
-        Payment persistedPayment = paymentRepository.findById(paymentId).orElseThrow();
+        assertThat(recoveredPayment.getStatus())
+                .isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(recoveredPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+        assertThat(recoveredPayment.getProviderTransactionId())
+                .isEqualTo("SIM-" + paymentId);
 
-        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+        assertThat(countProviderCharges(paymentId))
+                .isEqualTo(1);
 
-        assertThat(persistedPayment.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
-
-        assertThat(paymentRepository.count()).isEqualTo(1);
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId))
+                .singleElement()
+                .extracting(event -> event.getEventType())
+                .isEqualTo(PaymentOutboxEventType.PAYMENT_SUCCEEDED);
     }
 
     @Test
@@ -85,7 +104,7 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
         paymentProcessingTransactionService.startProcessing(paymentId);
 
-        // the provider has declined the payment but our database still shows PROCESSING
+        // the provider has already declined the charge
         createSimulatedProvider("DECLINED").charge(
                 paymentId,
                 PAYMENT_AMOUNT,
@@ -93,36 +112,51 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
         Payment recoveredPayment = paymentReconciliationService.reconcilePayment(paymentId);
 
-        Payment persistedPayment = paymentRepository.findById(paymentId).orElseThrow();
+        assertThat(recoveredPayment.getStatus())
+                .isEqualTo(PaymentStatus.FAILED);
 
-        assertThat(recoveredPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(recoveredPayment.getProviderTransactionId())
+                .isEqualTo("SIM-" + paymentId);
 
-        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
 
-        assertThat(persistedPayment.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId))
+                .singleElement()
+                .extracting(event -> event.getEventType())
+                .isEqualTo(PaymentOutboxEventType.PAYMENT_FAILED);
     }
 
     @Test
-    void reconcilePayment_shouldKeepProcessingStatus_whenProviderResultIsMissing() {
+    void reconcilePayment_shouldRetryCharge_whenProviderHasNoResult() {
         Payment pendingPayment = persistPendingPayment();
         UUID paymentId = pendingPayment.getId();
 
+        // simulate a crash immediately after committing PROCESSING
         paymentProcessingTransactionService.startProcessing(paymentId);
 
-        // no charge is stored by the simulated provider
-        Payment reconciledPayment = paymentReconciliationService.reconcilePayment(paymentId);
+        assertThat(simulatedProviderTransactionRepository
+                .findByPaymentId(paymentId))
+                .isEmpty();
 
-        Payment persistedPayment = paymentRepository.findById(paymentId).orElseThrow();
+        assertThat(paymentRepository.findById(paymentId)
+                .orElseThrow()
+                .getStatus())
+                .isEqualTo(PaymentStatus.PROCESSING);
 
-        assertThat(reconciledPayment.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
+        // recovery must finish the payment instead of leaving it stuck
+        Payment recoveredPayment = paymentReconciliationService.reconcilePayment(paymentId);
 
-        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
+        assertThat(recoveredPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(persistedPayment.getProviderTransactionId()).isNull();
+        assertThat(recoveredPayment.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
 
-        assertThat(simulatedProviderTransactionRepository.findByPaymentId(paymentId)).isEmpty();
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId))
+                .singleElement()
+                .extracting(event -> event.getEventType())
+                .isEqualTo(PaymentOutboxEventType.PAYMENT_SUCCEEDED);
     }
-
 
     @Test
     void reconcilePayment_shouldReuseCompletedPayment_whenCalledAgain() {
@@ -138,46 +172,43 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
         Payment firstRecovery = paymentReconciliationService.reconcilePayment(paymentId);
 
-        // capture the timestamp exactly as PostgreSQL stored it
-        Payment persistedPaymentAfterFirstRecovery = paymentRepository
+        Instant originalUpdatedAt = paymentRepository
                 .findById(paymentId)
-                .orElseThrow();
+                .orElseThrow()
+                .getUpdatedAt();
 
-        Instant originalPersistedUpdatedAt = persistedPaymentAfterFirstRecovery.getUpdatedAt();
+        Payment secondRecovery = paymentReconciliationService.reconcilePayment(paymentId);
 
-        Payment repeatedRecovery = paymentReconciliationService.reconcilePayment(paymentId);
-
-        Payment persistedPaymentAfterRepeatedRecovery = paymentRepository
+        Payment persistedPayment = paymentRepository
                 .findById(paymentId)
                 .orElseThrow();
 
         assertThat(firstRecovery.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(repeatedRecovery.getId()).isEqualTo(firstRecovery.getId());
+        assertThat(secondRecovery.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(repeatedRecovery.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+        assertThat(persistedPayment.getUpdatedAt()).isEqualTo(originalUpdatedAt);
 
-        // reconciliation must not change an already completed payment
-        assertThat(persistedPaymentAfterRepeatedRecovery.getUpdatedAt()).isEqualTo(originalPersistedUpdatedAt);
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
 
-        assertThat(repeatedRecovery.getUpdatedAt()).isEqualTo(originalPersistedUpdatedAt);
-
-        assertThat(paymentRepository.count()).isEqualTo(1);
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId)).hasSize(1);
     }
-
 
     @Test
     void reconcilePayment_shouldLeavePendingPaymentUnchanged() {
         Payment pendingPayment = persistPendingPayment();
 
         Payment reconciledPayment = paymentReconciliationService.reconcilePayment(
-                pendingPayment.getId());
+                        pendingPayment.getId());
 
         assertThat(reconciledPayment.getStatus())
                 .isEqualTo(PaymentStatus.PENDING);
 
-        assertThat(simulatedProviderTransactionRepository
-                .findByPaymentId(pendingPayment.getId()))
+        assertThat(countProviderCharges(pendingPayment.getId()))
+                .isZero();
+
+        assertThat(paymentOutboxRepository
+                .findAllByPaymentId(pendingPayment.getId()))
                 .isEmpty();
     }
 
@@ -188,7 +219,6 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
         assertThatThrownBy(() -> paymentReconciliationService.reconcilePayment(nonexistentPaymentId)
         ).isInstanceOf(PaymentNotFoundException.class);
     }
-
 
     @Test
     void completeProcessing_shouldReuseIdenticalResult_whenCalledTwice() {
@@ -205,35 +235,32 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
                         paymentId,
                         providerResult);
 
-        // read the timestamp stored by PostgreSQL instead of using in-memory precision
-        Payment persistedPaymentAfterFirstCompletion = paymentRepository
+        Instant originalUpdatedAt = paymentRepository
                 .findById(paymentId)
-                .orElseThrow();
-
-        Instant originalPersistedUpdatedAt = persistedPaymentAfterFirstCompletion.getUpdatedAt();
+                .orElseThrow()
+                .getUpdatedAt();
 
         Payment repeatedCompletion = paymentProcessingTransactionService.completeProcessing(
                         paymentId,
                         providerResult);
 
-        Payment persistedPaymentAfterRepeatedCompletion = paymentRepository
+        Payment persistedPayment = paymentRepository
                 .findById(paymentId)
                 .orElseThrow();
 
-        assertThat(firstCompletion.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+        assertThat(firstCompletion.getStatus())
+                .isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(repeatedCompletion.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+        assertThat(repeatedCompletion.getStatus())
+                .isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(repeatedCompletion.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
+        assertThat(repeatedCompletion.getProviderTransactionId())
+                .isEqualTo("SIM-" + paymentId);
 
-        // repeating the same result must not update the stored timestamp
-        assertThat(persistedPaymentAfterRepeatedCompletion.getUpdatedAt())
-                .isEqualTo(originalPersistedUpdatedAt);
+        assertThat(persistedPayment.getUpdatedAt()).isEqualTo(originalUpdatedAt);
 
-        assertThat(repeatedCompletion.getUpdatedAt())
-                .isEqualTo(originalPersistedUpdatedAt);
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId)).hasSize(1);
     }
-
 
     @Test
     void completeProcessing_shouldRejectConflictingResult_whenPaymentAlreadySucceeded() {
@@ -250,14 +277,74 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
 
         assertThatThrownBy(() -> paymentProcessingTransactionService.completeProcessing(
                         paymentId,
-                        new PaymentProviderResult(PaymentProviderOutcome.DECLINED,
+                        new PaymentProviderResult(
+                                PaymentProviderOutcome.DECLINED,
                                 "SIM-" + paymentId))
         ).isInstanceOf(IllegalStateException.class);
 
-        Payment persistedPayment = paymentRepository.findById(paymentId)
+        assertThat(paymentRepository.findById(paymentId)
+                .orElseThrow()
+                .getStatus())
+                .isEqualTo(PaymentStatus.SUCCEEDED);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId)).hasSize(1);
+    }
+
+    @Test
+    void reconcilePayment_shouldChargeOnlyOnce_whenTwoRecoveryWorkersRunConcurrently()
+            throws Exception {
+
+        Payment pendingPayment = persistPendingPayment();
+        UUID paymentId = pendingPayment.getId();
+
+        paymentProcessingTransactionService.startProcessing(paymentId);
+
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch startRecovery = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+
+            Future<Payment> firstRecovery = executor.submit(() -> {
+                workersReady.countDown();
+                awaitLatch(startRecovery);
+
+                return paymentReconciliationService.reconcilePayment(paymentId);
+            });
+
+            Future<Payment> secondRecovery = executor.submit(() -> {
+                workersReady.countDown();
+                awaitLatch(startRecovery);
+
+                return paymentReconciliationService.reconcilePayment(paymentId);
+            });
+
+            try {
+                assertThat(workersReady.await(10, TimeUnit.SECONDS)).isTrue();
+
+                startRecovery.countDown();
+
+                assertThat(firstRecovery.get(20, TimeUnit.SECONDS)
+                        .getStatus())
+                        .isEqualTo(PaymentStatus.SUCCEEDED);
+
+                assertThat(secondRecovery.get(20, TimeUnit.SECONDS)
+                        .getStatus())
+                        .isEqualTo(PaymentStatus.SUCCEEDED);
+
+            } finally {
+                startRecovery.countDown();
+            }
+        }
+
+        Payment persistedPayment = paymentRepository
+                .findById(paymentId)
                 .orElseThrow();
 
         assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId)).hasSize(1);
     }
 
     private Payment persistPendingPayment() {
@@ -271,7 +358,31 @@ class PaymentReconciliationIntegrationTest extends AbstractIntegrationTest {
         return paymentRepository.saveAndFlush(pendingPayment);
     }
 
-    private SimulatedPaymentProvider createSimulatedProvider(String configuredOutcome) {
-        return new SimulatedPaymentProvider(simulatedProviderTransactionRepository, configuredOutcome);
+    private SimulatedPaymentProvider createSimulatedProvider(
+            String configuredOutcome
+    ) {
+        return new SimulatedPaymentProvider(
+                simulatedProviderTransactionRepository,
+                configuredOutcome);
+    }
+
+    private long countProviderCharges(UUID paymentId) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM simulated_provider_transactions
+                WHERE payment_id = ?
+                """,
+                Long.class,
+                paymentId);
+
+        return count == null ? 0 : count;
+    }
+
+    private static void awaitLatch(CountDownLatch latch) throws InterruptedException {
+
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            throw new AssertionError("Timed out waiting to begin payment recovery");
+        }
     }
 }

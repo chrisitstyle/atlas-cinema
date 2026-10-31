@@ -11,12 +11,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 
 /*
- * Recovers payment results that were not persisted after provider processing
- * Never initiates a new charge during reconciliation
+ * Recovers payments interrupted during provider processing
+ * Retries missing charges using the same provider idempotency key
  */
 @Service
 @RequiredArgsConstructor
@@ -24,7 +23,8 @@ public class PaymentReconciliationService {
 
     private final PaymentRepository paymentRepository;
     private final PaymentProvider paymentProvider;
-    private final PaymentProcessingTransactionService paymentProcessingTransactionService;
+    private final PaymentProcessingTransactionService
+            paymentProcessingTransactionService;
 
     public Payment reconcilePayment(UUID paymentId) {
         Objects.requireNonNull(paymentId, "Payment id is required");
@@ -32,19 +32,24 @@ public class PaymentReconciliationService {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
 
-        // only payments with an unknown local result need reconciliation
+        // only interrupted PROCESSING payments need recovery
         if (payment.getStatus() != PaymentStatus.PROCESSING) {
             return payment;
         }
 
-        Optional<PaymentProviderResult> providerResult =
-                paymentProvider.findChargeResult(paymentId);
+        // First check whether the provider already completed the charge
+        PaymentProviderResult providerResult =
+                paymentProvider.findChargeResult(paymentId)
+                        .orElseGet(() -> {
+                            // the same payment id is reused for every retry
+                            // The provider must guarantee idempotent charges
+                            return paymentProvider.charge(
+                                    payment.getId(),
+                                    payment.getAmount(),
+                                    payment.getCurrencyCode());
+                        });
 
-        // an unavailable result is not evidence of a declined payment
-        if (providerResult.isEmpty()) {
-            return payment;
-        }
-
-        return paymentProcessingTransactionService.completeProcessing(paymentId, providerResult.get());
+        // store the final result and the outbox event atomically
+        return paymentProcessingTransactionService.completeProcessing(paymentId, providerResult);
     }
 }
