@@ -1,0 +1,73 @@
+{
+  "realm": "atlas-cinema",
+  "enabled": true,
+  "displayName": "Atlas Cinema",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "CUSTOMER",
+        "description": "Customer account and own bookings"
+      },
+      {
+        "name": "CINEMA_EMPLOYEE",
+        "description": "Cinema staff operations"
+      },
+      {
+        "name": "MANAGER",
+        "description": "Cinema, hall, movie, screening and pricing management"
+      },
+      {
+        "name": "ADMIN",
+        "description": "System administration and employee management",
+        "composite": true,
+        "composites": {
+          "realm": ["MANAGER", "CINEMA_EMPLOYEE"]
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "atlas-cinema-postman",
+      "name": "Atlas Cinema Postman (development only)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://oauth.pstmn.io/v1/callback",
+        "https://oauth.pstmn.io/v1/browser-callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "roles",
+        "web-origins"
+      ],
+      "protocolMappers": [
+        {
+          "name": "atlas-cinema-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "atlas-cinema-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}
