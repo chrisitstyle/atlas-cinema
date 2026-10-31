@@ -245,6 +245,9 @@ services:
     build:
       context: ../backend/payment-service
 
+    ports:
+      - "127.0.0.1:8085:8085"
+
     environment:
       EUREKA_URL: http://discovery-server:8761/eureka/
       EUREKA_PREFER_IP: "true"
@@ -253,11 +256,20 @@ services:
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
 
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+      PAYMENT_SIMULATOR_OUTCOME: APPROVED
+      PAYMENT_PROCESSING_ENABLED: "true"
+      PAYMENT_OUTBOX_PUBLISHER_ENABLED: "true"
+      PAYMENT_REFUND_PROCESSING_ENABLED: "true"
+
     depends_on:
       discovery-server:
         condition: service_started
       payment-db:
         condition: service_healthy
+      kafka:
+        condition: service_started
 
   # api-gateway
 

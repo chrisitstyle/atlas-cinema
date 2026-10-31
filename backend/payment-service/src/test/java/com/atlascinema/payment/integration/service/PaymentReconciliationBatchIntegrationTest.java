@@ -2,14 +2,17 @@
 package com.atlascinema.payment.integration.service;
 
 import com.atlascinema.payment.domain.Payment;
+import com.atlascinema.payment.domain.PaymentOutboxEventType;
 import com.atlascinema.payment.domain.PaymentStatus;
 import com.atlascinema.payment.integration.AbstractIntegrationTest;
 import com.atlascinema.payment.provider.SimulatedPaymentProvider;
+import com.atlascinema.payment.repository.PaymentOutboxRepository;
 import com.atlascinema.payment.repository.PaymentRepository;
 import com.atlascinema.payment.repository.SimulatedProviderTransactionRepository;
 import com.atlascinema.payment.service.PaymentReconciliationBatchService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 
 import java.math.BigDecimal;
@@ -21,19 +24,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /*
  * Verifies scheduled payment recovery using real PostgreSQL
- * Tests eligibility, retry delays, and bounded batch processing
+ * Tests stale payments, idempotent charge retries and batch limits
  */
 @TestPropertySource(properties = {
         "payment.reconciliation.batch-size=2"
 })
 class PaymentReconciliationBatchIntegrationTest extends AbstractIntegrationTest {
 
-    private static final BigDecimal PAYMENT_AMOUNT = new BigDecimal("29.90");
+    private static final BigDecimal PAYMENT_AMOUNT =
+            new BigDecimal("29.90");
 
     private static final String CURRENCY_CODE = "PLN";
 
     @Autowired
     private PaymentRepository paymentRepository;
+
+    @Autowired
+    private PaymentOutboxRepository paymentOutboxRepository;
 
     @Autowired
     private SimulatedProviderTransactionRepository simulatedProviderTransactionRepository;
@@ -42,117 +49,139 @@ class PaymentReconciliationBatchIntegrationTest extends AbstractIntegrationTest 
     private PaymentReconciliationBatchService paymentReconciliationBatchService;
 
     @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
     private Clock clock;
 
     @Test
     void reconcileEligiblePayments_shouldRecoverApprovedPayment() {
-        Payment processingPayment = persistProcessingPayment(
+        Payment payment = persistProcessingPayment(
                 clock.instant().minusSeconds(600));
 
-        UUID paymentId = processingPayment.getId();
+        UUID paymentId = payment.getId();
 
         createSimulatedProvider("APPROVED").charge(
                 paymentId,
                 PAYMENT_AMOUNT,
                 CURRENCY_CODE);
 
-        int attemptedReconciliations = paymentReconciliationBatchService.reconcileEligiblePayments();
+        int attempted = paymentReconciliationBatchService.reconcileEligiblePayments();
 
-        Payment persistedPayment = paymentRepository.findById(paymentId).orElseThrow();
+        Payment persistedPayment = paymentRepository
+                .findById(paymentId)
+                .orElseThrow();
 
-        assertThat(attemptedReconciliations).isEqualTo(1);
+        assertThat(attempted).isEqualTo(1);
 
         assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
 
-        assertThat(persistedPayment.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
-
         assertThat(persistedPayment.getLastReconciliationAttemptAt()).isNotNull();
+
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
     }
 
     @Test
     void reconcileEligiblePayments_shouldRecoverDeclinedPayment() {
-        Payment processingPayment = persistProcessingPayment(
+        Payment payment = persistProcessingPayment(
                 clock.instant().minusSeconds(600));
 
-        UUID paymentId = processingPayment.getId();
+        UUID paymentId = payment.getId();
 
         createSimulatedProvider("DECLINED").charge(
                 paymentId,
                 PAYMENT_AMOUNT,
                 CURRENCY_CODE);
 
-        int attemptedReconciliations = paymentReconciliationBatchService.reconcileEligiblePayments();
+        int attempted = paymentReconciliationBatchService.reconcileEligiblePayments();
 
-        Payment persistedPayment = paymentRepository.findById(paymentId).orElseThrow();
-
-        assertThat(attemptedReconciliations).isEqualTo(1);
-
-        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
-
-        assertThat(persistedPayment.getProviderTransactionId()).isEqualTo("SIM-" + paymentId);
-    }
-
-    @Test
-    void reconcileEligiblePayments_shouldDelayRetry_whenProviderResultIsMissing() {
-        Payment processingPayment = persistProcessingPayment(
-                clock.instant().minusSeconds(600));
-
-        UUID paymentId = processingPayment.getId();
-
-        int firstBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
-
-        Payment paymentAfterFirstAttempt = paymentRepository
+        Payment persistedPayment = paymentRepository
                 .findById(paymentId)
                 .orElseThrow();
 
-        Instant firstAttemptAt = paymentAfterFirstAttempt.getLastReconciliationAttemptAt();
+        assertThat(attempted).isEqualTo(1);
 
-        int secondBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
+        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
 
-        Payment paymentAfterSecondAttempt = paymentRepository
+        assertThat(persistedPayment.getProviderTransactionId())
+                .isEqualTo("SIM-" + paymentId);
+
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId))
+                .singleElement()
+                .extracting(event -> event.getEventType())
+                .isEqualTo(PaymentOutboxEventType.PAYMENT_FAILED);
+    }
+
+    @Test
+    void reconcileEligiblePayments_shouldRetryCharge_whenProviderResultIsMissing() {
+        Payment payment = persistProcessingPayment(
+                clock.instant().minusSeconds(600));
+
+        UUID paymentId = payment.getId();
+
+        // the original worker stopped before calling the provider
+        assertThat(countProviderCharges(paymentId)).isZero();
+
+        int firstBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
+
+        Payment recoveredPayment = paymentRepository
                 .findById(paymentId)
                 .orElseThrow();
 
         assertThat(firstBatchAttempts).isEqualTo(1);
 
-        // the retry delay prevents an immediate second provider lookup
+        assertThat(recoveredPayment.getStatus())
+                .isEqualTo(PaymentStatus.SUCCEEDED);
+
+        assertThat(recoveredPayment.getLastReconciliationAttemptAt()).isNotNull();
+
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId)).hasSize(1);
+
+        // a terminal payment must not be selected for reconciliation again
+        int secondBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
+
         assertThat(secondBatchAttempts).isZero();
 
-        assertThat(paymentAfterSecondAttempt.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
-
-        assertThat(paymentAfterSecondAttempt.getLastReconciliationAttemptAt()).isEqualTo(firstAttemptAt);
-
-        assertThat(paymentAfterSecondAttempt.getProviderTransactionId()).isNull();
+        assertThat(countProviderCharges(paymentId))
+                .isEqualTo(1);
     }
 
     @Test
     void reconcileEligiblePayments_shouldSkipPayment_whenProcessingStartedRecently() {
-        Payment processingPayment = persistProcessingPayment(clock.instant());
+        Payment payment = persistProcessingPayment(clock.instant());
 
-        int attemptedReconciliations = paymentReconciliationBatchService.reconcileEligiblePayments();
+        int attempted = paymentReconciliationBatchService.reconcileEligiblePayments();
 
         Payment persistedPayment = paymentRepository
-                .findById(processingPayment.getId())
+                .findById(payment.getId())
                 .orElseThrow();
 
-        assertThat(attemptedReconciliations).isZero();
+        assertThat(attempted).isZero();
 
         assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
 
         assertThat(persistedPayment.getLastReconciliationAttemptAt()).isNull();
+
+        // dont retry a charge while the original worker may still be active
+        assertThat(countProviderCharges(payment.getId()))
+                .isZero();
     }
 
     @Test
     void reconcileEligiblePayments_shouldRespectBatchSize_andProcessRemainingPaymentsLater() {
-        Instant processingStartedAt = clock.instant().minusSeconds(600);
+        Instant startedAt = clock.instant().minusSeconds(600);
 
-        Payment firstPayment = persistProcessingPayment(processingStartedAt);
+        Payment firstPayment = persistProcessingPayment(startedAt);
 
-        Payment secondPayment = persistProcessingPayment(processingStartedAt);
+        Payment secondPayment = persistProcessingPayment(startedAt);
 
-        Payment thirdPayment = persistProcessingPayment(processingStartedAt);
+        Payment thirdPayment = persistProcessingPayment(startedAt);
 
-        // batch size is configured to 2 for this test class
+        // only two payments may be processed in the first batch
         int firstBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
 
         int secondBatchAttempts = paymentReconciliationBatchService.reconcileEligiblePayments();
@@ -160,26 +189,17 @@ class PaymentReconciliationBatchIntegrationTest extends AbstractIntegrationTest 
         assertThat(firstBatchAttempts).isEqualTo(2);
         assertThat(secondBatchAttempts).isEqualTo(1);
 
-        assertThat(paymentRepository.findById(firstPayment.getId())
-                .orElseThrow().getLastReconciliationAttemptAt())
-                .isNotNull();
-
-        assertThat(paymentRepository.findById(secondPayment.getId())
-                .orElseThrow().getLastReconciliationAttemptAt())
-                .isNotNull();
-
-        assertThat(paymentRepository.findById(thirdPayment.getId())
-                .orElseThrow().getLastReconciliationAttemptAt())
-                .isNotNull();
+        assertRecovered(firstPayment.getId());
+        assertRecovered(secondPayment.getId());
+        assertRecovered(thirdPayment.getId());
     }
 
     @Test
     void claimForReconciliation_shouldRejectSecondClaim_withinRetryWindow() {
-        Payment processingPayment = persistProcessingPayment(
+        Payment payment = persistProcessingPayment(
                 clock.instant().minusSeconds(600));
 
-        UUID paymentId = processingPayment.getId();
-
+        UUID paymentId = payment.getId();
         Instant currentTime = clock.instant();
 
         Instant processingStartedBefore = currentTime.minusSeconds(60);
@@ -202,9 +222,20 @@ class PaymentReconciliationBatchIntegrationTest extends AbstractIntegrationTest 
 
         assertThat(firstClaim).isEqualTo(1);
         assertThat(repeatedClaim).isZero();
+
+        Payment persistedPayment = paymentRepository
+                .findById(paymentId)
+                .orElseThrow();
+
+        assertThat(persistedPayment.getLastReconciliationAttemptAt()).isNotNull();
+
+        assertThat(persistedPayment.getStatus())
+                .isEqualTo(PaymentStatus.PROCESSING);
     }
 
-    private Payment persistProcessingPayment(Instant processingStartedAt) {
+    private Payment persistProcessingPayment(
+            Instant processingStartedAt
+    ) {
         Payment payment = Payment.initiateForBooking(
                 UUID.randomUUID(),
                 PAYMENT_AMOUNT,
@@ -217,9 +248,41 @@ class PaymentReconciliationBatchIntegrationTest extends AbstractIntegrationTest 
         return paymentRepository.saveAndFlush(payment);
     }
 
-    private SimulatedPaymentProvider createSimulatedProvider(String configuredOutcome) {
+    private SimulatedPaymentProvider createSimulatedProvider(
+            String configuredOutcome
+    ) {
         return new SimulatedPaymentProvider(
                 simulatedProviderTransactionRepository,
                 configuredOutcome);
+    }
+
+    private void assertRecovered(UUID paymentId) {
+        Payment persistedPayment = paymentRepository
+                .findById(paymentId)
+                .orElseThrow();
+
+        assertThat(persistedPayment.getStatus()).isEqualTo(PaymentStatus.SUCCEEDED);
+
+        assertThat(persistedPayment.getLastReconciliationAttemptAt()).isNotNull();
+
+        assertThat(countProviderCharges(paymentId)).isEqualTo(1);
+
+        assertThat(paymentOutboxRepository.findAllByPaymentId(paymentId))
+                .singleElement()
+                .extracting(event -> event.getEventType())
+                .isEqualTo(PaymentOutboxEventType.PAYMENT_SUCCEEDED);
+    }
+
+    private long countProviderCharges(UUID paymentId) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM simulated_provider_transactions
+                WHERE payment_id = ?
+                """,
+                Long.class,
+                paymentId);
+
+        return count == null ? 0 : count;
     }
 }
