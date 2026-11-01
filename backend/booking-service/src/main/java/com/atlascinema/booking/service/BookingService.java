@@ -35,6 +35,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Coordinates seat holds, booking persistence and cancellation events.
+ * Customer ownership is supplied by the authenticated HTTP boundary.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -50,9 +54,17 @@ public class BookingService {
     private final OutboxEventWriter outboxEventWriter;
     private final ApplicationEventPublisher applicationEventPublisher;
 
+    // creates a guest booking for trusted internal callers and existing service-level tests
+    @Transactional
+    public BookingResponse createBooking(CreateBookingRequest request) {
+        return createBooking(request, null);
+    }
+
+    // creates a booking with ownership derived from the verified caller identity
     @Transactional
     public BookingResponse createBooking(
-            CreateBookingRequest request
+            CreateBookingRequest request,
+            UUID authenticatedCustomerId
     ) {
         Duration holdDuration = bookingProperties.holdDuration();
         LocalDateTime createdAt = LocalDateTime.now(clock);
@@ -62,7 +74,7 @@ public class BookingService {
         ensureScreeningIsAvailable(screening, createdAt);
 
         Booking booking = Booking.create(
-                request.customerId(),
+                authenticatedCustomerId,
                 request.contactEmail(),
                 request.screeningId(),
                 createdAt);
@@ -132,6 +144,15 @@ public class BookingService {
 
             throw exception;
         }
+    }
+
+    // returns bookings for a verified Keycloak subject without exposing other customers data
+    @Transactional(readOnly = true)
+    public List<BookingResponse> getCustomerBookings(UUID authenticatedCustomerId) {
+        return bookingRepository.findByCustomerIdOrderByCreatedAtDesc(authenticatedCustomerId)
+                .stream()
+                .map(BookingResponse::from)
+                .toList();
     }
 
     @Transactional(readOnly = true)

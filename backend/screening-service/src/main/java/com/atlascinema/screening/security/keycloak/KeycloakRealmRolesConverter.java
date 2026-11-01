@@ -30,8 +30,7 @@ public class KeycloakRealmRolesConverter
             "ADMIN"
     );
 
-    private final JwtGrantedAuthoritiesConverter scopeAuthoritiesConverter =
-            new JwtGrantedAuthoritiesConverter();
+    private final JwtGrantedAuthoritiesConverter scopeAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
 
     @Override
     public Collection<GrantedAuthority> convert(Jwt jwt) {

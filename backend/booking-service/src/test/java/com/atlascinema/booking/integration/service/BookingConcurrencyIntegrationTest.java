@@ -90,7 +90,6 @@ class BookingConcurrencyIntegrationTest extends AbstractIntegrationTest {
     void createBooking_shouldAllowExactlyOneBooking_whenManyRequestsReserveSameSeatConcurrently() throws Exception {
 
         CreateBookingRequest request = new CreateBookingRequest(
-                        null,
                         "guest@example.com",
                         screeningId,
                         List.of(seatId));

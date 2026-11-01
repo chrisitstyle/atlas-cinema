@@ -60,6 +60,9 @@ public class SecurityConfig {
                         // both guests and authenticated customers can book
                         .pathMatchers(HttpMethod.POST, "/bookings").permitAll()
 
+                        // Customers can access their own booking history.
+                        .pathMatchers(HttpMethod.GET, "/bookings/me").hasRole("CUSTOMER")
+
                         // temporarily restricted to staff until booking
                         // ownership verification is implemented
                         .pathMatchers(

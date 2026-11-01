@@ -94,7 +94,6 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
                 + seatId;
 
         CreateBookingRequest firstRequest = new CreateBookingRequest(
-                UUID.randomUUID(),
                 "first@example.com",
                 screeningId,
                 List.of(seatId));
@@ -127,7 +126,6 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
         assertThat(outboxEvent.getPayload()).contains(firstBooking.id().toString());
 
         CreateBookingRequest secondRequest = new CreateBookingRequest(
-                UUID.randomUUID(),
                 "second@example.com",
                 screeningId,
                 List.of(seatId));
@@ -215,7 +213,6 @@ class BookingCancellationIntegrationTest extends AbstractIntegrationTest {
 
     private BookingResponse createHeldBooking() {
         return bookingService.createBooking(new CreateBookingRequest(
-                        UUID.randomUUID(),
                         "cancel-after-commit@example.com",
                         screeningId,
                         List.of(seatId)));

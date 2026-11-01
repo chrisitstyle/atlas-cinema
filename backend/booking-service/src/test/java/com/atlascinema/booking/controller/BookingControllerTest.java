@@ -37,7 +37,7 @@ class BookingControllerTest {
         UUID seatId = UUID.randomUUID();
         UUID bookingSeatId = UUID.randomUUID();
 
-        CreateBookingRequest request = new CreateBookingRequest(null, "guest@example.com",
+        CreateBookingRequest request = new CreateBookingRequest("guest@example.com",
                         screeningId,
                         List.of(seatId));
 
@@ -56,10 +56,10 @@ class BookingControllerTest {
                                         seatId,
                                         new BigDecimal("29.90"))));
 
-        when(bookingService.createBooking(request))
+        when(bookingService.createBooking(request, null))
                 .thenReturn(response);
 
-        ResponseEntity<BookingResponse> result = bookingController.createBooking(request);
+        ResponseEntity<BookingResponse> result = bookingController.createBooking(request, null);
 
         assertThat(result.getStatusCode().value()).isEqualTo(201);
 
@@ -67,7 +67,7 @@ class BookingControllerTest {
 
         assertThat(result.getBody()).isEqualTo(response);
 
-        verify(bookingService).createBooking(request);
+        verify(bookingService).createBooking(request, null);
     }
 
     @Test

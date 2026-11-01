@@ -107,10 +107,8 @@ class BookingExpirationFlowIntegrationTest extends AbstractIntegrationTest {
                         + seatId;
 
         try {
-            UUID customerId = UUID.randomUUID();
 
             CreateBookingRequest createBookingRequest = new CreateBookingRequest(
-                            customerId,
                             "guest@example.com",
                             screeningId,
                             List.of(seatId));
@@ -175,7 +173,7 @@ class BookingExpirationFlowIntegrationTest extends AbstractIntegrationTest {
                             bookingExpiredEventMessage.payload(),
                             BookingExpiredPayload.class);
 
-            assertThat(bookingExpiredPayload.customerId()).isEqualTo(customerId);
+            assertThat(bookingExpiredPayload.customerId()).isNull();
 
             assertThat(bookingExpiredPayload.contactEmail()).isEqualTo("guest@example.com");
 
