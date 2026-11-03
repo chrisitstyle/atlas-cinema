@@ -67,6 +67,10 @@ public class SecurityConfig {
                                 "/internal/bookings/*/payment-details"
                         ).access(new PaymentServiceAuthorizationManager())
 
+                        // only authenticated customers can initiate payments for their bookings
+                        .requestMatchers(HttpMethod.POST, "/bookings/*/payments")
+                        .hasRole("CUSTOMER")
+
                         // reject endpoints without explicit authorization rules.
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth2ResourceServer ->

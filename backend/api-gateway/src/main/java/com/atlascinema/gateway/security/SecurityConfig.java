@@ -85,9 +85,12 @@ public class SecurityConfig {
                                 "/screenings/**"
                         ).hasAnyRole("MANAGER", "ADMIN")
 
+                        // authenticated customers can initiate payments through booking-service.
+                        .pathMatchers(HttpMethod.POST, "/bookings/*/payments")
+                        .hasRole("CUSTOMER")
+
                         // deny access to endpoints without explicit rules
-                        .anyExchange().denyAll()
-                )
+                        .anyExchange().denyAll())
 
                 .oauth2ResourceServer(oauth2ResourceServer ->
                         oauth2ResourceServer.jwt(jwtConfiguration ->

@@ -219,6 +219,12 @@ services:
       KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
       KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
 
+      # Credentials for booking-service machine-to-machine authentication
+      BOOKING_SERVICE_CLIENT_SECRET: ${BOOKING_SERVICE_CLIENT_SECRET:?Set BOOKING_SERVICE_CLIENT_SECRET in infra/.env}
+
+      # Internal Keycloak token endpoint
+      KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/token
+
     depends_on:
       discovery-server:
         condition: service_started
