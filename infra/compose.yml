@@ -316,6 +316,10 @@ services:
       PAYMENT_OUTBOX_PUBLISHER_ENABLED: "true"
       PAYMENT_REFUND_PROCESSING_ENABLED: "true"
 
+      # OAuth2 Client Credentials configuration
+      PAYMENT_SERVICE_CLIENT_SECRET: ${PAYMENT_SERVICE_CLIENT_SECRET:?Set PAYMENT_SERVICE_CLIENT_SECRET in infra/.env}
+      KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/token
+
     depends_on:
       discovery-server:
         condition: service_started

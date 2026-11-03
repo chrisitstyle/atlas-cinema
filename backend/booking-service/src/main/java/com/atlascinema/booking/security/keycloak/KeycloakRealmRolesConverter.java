@@ -23,7 +23,7 @@ public class KeycloakRealmRolesConverter
     private static final String ROLE_PREFIX = "ROLE_";
 
     private static final Set<String> APPLICATION_ROLES = Set.of(
-            "CUSTOMER", "CINEMA_EMPLOYEE", "MANAGER", "ADMIN");
+            "CUSTOMER", "CINEMA_EMPLOYEE", "MANAGER", "ADMIN",  "SERVICE_PAYMENT_DETAILS_READ");
 
     private final JwtGrantedAuthoritiesConverter scopeAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
 
