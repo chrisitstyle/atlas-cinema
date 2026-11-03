@@ -29,6 +29,10 @@
       {
         "name": "SERVICE_PAYMENT_DETAILS_READ",
         "description": "Allows payment-service to read booking payment details"
+      },
+      {
+        "name": "SERVICE_PAYMENT_INITIATE",
+        "description": "Allows booking-service to initiate payments"
       }
     ]
   },
@@ -100,12 +104,45 @@
           }
         }
       ]
+    },
+
+    {
+      "clientId": "atlas-cinema-booking-service",
+      "name": "Atlas Cinema Booking Service (machine-to-machine)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": ["basic", "roles"],
+      "protocolMappers": [
+        {
+          "name": "atlas-cinema-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "atlas-cinema-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "scopeMappings": [
     {
       "client": "atlas-cinema-payment-service",
       "roles": ["SERVICE_PAYMENT_DETAILS_READ"]
+    },
+    {
+      "client": "atlas-cinema-booking-service",
+      "roles": ["SERVICE_PAYMENT_INITIATE"]
     }
   ],
   "users": [
@@ -114,6 +151,12 @@
       "enabled": true,
       "serviceAccountClientId": "atlas-cinema-payment-service",
       "realmRoles": ["SERVICE_PAYMENT_DETAILS_READ"]
+    },
+    {
+      "username": "service-account-atlas-cinema-booking-service",
+      "enabled": true,
+      "serviceAccountClientId": "atlas-cinema-booking-service",
+      "realmRoles": ["SERVICE_PAYMENT_INITIATE"]
     }
   ]
 }
