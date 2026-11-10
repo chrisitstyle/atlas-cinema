@@ -42,6 +42,9 @@ class OutboxPublisherTest {
     @Mock
     private JsonMapper jsonMapper;
 
+    @Mock
+    private SendResult<String, Object> kafkaSendResult;
+
     private Clock clock;
     private OutboxPublisher outboxPublisher;
 
@@ -85,8 +88,8 @@ class OutboxPublisherTest {
         when(jsonMapper.readValue(serializedMessage, BookingEventMessage.class))
                 .thenReturn(bookingEventMessage);
 
-        CompletableFuture<SendResult<String, Object>> kafkaAcknowledgementFuture = CompletableFuture
-                .completedFuture(mock(SendResult.class));
+        CompletableFuture<SendResult<String, Object>> kafkaAcknowledgementFuture =
+                CompletableFuture.completedFuture(kafkaSendResult);
 
         when(bookingEventPublisher.publish(bookingEventMessage)
         ).thenReturn(kafkaAcknowledgementFuture);
