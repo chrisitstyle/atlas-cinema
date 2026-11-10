@@ -89,6 +89,11 @@ public class SecurityConfig {
                         .pathMatchers(HttpMethod.POST, "/bookings/*/payments")
                         .hasRole("CUSTOMER")
 
+                        // Guest payments use a booking token instead of a Keycloak JWT
+                        .pathMatchers(
+                                HttpMethod.POST,
+                                "/bookings/*/guest-payments").permitAll()
+
                         // deny access to endpoints without explicit rules
                         .anyExchange().denyAll())
 

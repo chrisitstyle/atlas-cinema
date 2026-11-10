@@ -58,6 +58,9 @@ public class Booking {
             orphanRemoval = true)
     private List<BookingSeat> seats = new ArrayList<>();
 
+    @Column(name = "guest_payment_token_hash", length = 64)
+    private String guestPaymentTokenHash;
+
 
     private Booking(
             UUID id,
@@ -167,5 +170,22 @@ public class Booking {
         }
 
         status = BookingStatus.EXPIRED;
+    }
+
+    /**
+     * Stores a guest payment token hash without exposing the original token.
+     */
+    public void assignGuestPaymentTokenHash(String tokenHash) {
+        if (customerId != null) {
+            throw new IllegalStateException(
+                    "Guest payment tokens cannot be assigned to customer bookings"
+            );
+        }
+
+        if (tokenHash == null || !tokenHash.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid guest payment token hash");
+        }
+
+        this.guestPaymentTokenHash = tokenHash;
     }
 }

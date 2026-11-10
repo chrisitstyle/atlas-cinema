@@ -71,6 +71,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/bookings/*/payments")
                         .hasRole("CUSTOMER")
 
+                        // Guests can initiate payments using a valid booking-specific token
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/bookings/*/guest-payments").permitAll()
+
                         // reject endpoints without explicit authorization rules.
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth2ResourceServer ->
