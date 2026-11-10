@@ -5,11 +5,11 @@ import com.atlascinema.booking.client.ScreeningClient;
 import com.atlascinema.booking.client.dto.ScreeningClientResponse;
 import com.atlascinema.booking.client.dto.ScreeningClientStatus;
 import com.atlascinema.booking.config.BookingProperties;
+import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingSeat;
 import com.atlascinema.booking.dto.BookingPaymentDetailsResponse;
 import com.atlascinema.booking.dto.BookingResponse;
 import com.atlascinema.booking.dto.CreateBookingRequest;
-import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.event.BookingCancelledEvent;
 import com.atlascinema.booking.event.BookingSeatHoldsReleaseRequested;
 import com.atlascinema.booking.exception.BookingNotFoundException;
@@ -35,6 +35,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Coordinates seat holds, booking persistence and cancellation events.
+ * Supports optional guest payment token hashes during booking creation.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -50,9 +54,30 @@ public class BookingService {
     private final OutboxEventWriter outboxEventWriter;
     private final ApplicationEventPublisher applicationEventPublisher;
 
+    // preserve existing internal callers and service-level tests
+    @Transactional
+    public BookingResponse createBooking(CreateBookingRequest request) {
+        return createBooking(request, null);
+    }
+
+    // preserve the existing authenticated booking creation contract
     @Transactional
     public BookingResponse createBooking(
-            CreateBookingRequest request
+            CreateBookingRequest request,
+            UUID authenticatedCustomerId
+    ) {
+        return createBooking(request, authenticatedCustomerId, null);
+    }
+
+    /**
+     * Creates a booking with an optional guest payment token hash.
+     * The original guest token is never persisted.
+     */
+    @Transactional
+    public BookingResponse createBooking(
+            CreateBookingRequest request,
+            UUID authenticatedCustomerId,
+            String guestPaymentTokenHash
     ) {
         Duration holdDuration = bookingProperties.holdDuration();
         LocalDateTime createdAt = LocalDateTime.now(clock);
@@ -62,14 +87,19 @@ public class BookingService {
         ensureScreeningIsAvailable(screening, createdAt);
 
         Booking booking = Booking.create(
-                request.customerId(),
+                authenticatedCustomerId,
                 request.contactEmail(),
                 request.screeningId(),
                 createdAt);
 
+        // store the guest token hash before persisting the booking
+        if (guestPaymentTokenHash != null) {
+            booking.assignGuestPaymentTokenHash(guestPaymentTokenHash);
+        }
+
         /*
-         * Validate every seat before touching Redis
-         * This avoids creating temporary holds for an invalid request
+         * Validate every seat before touching Redis.
+         * This avoids creating temporary holds for an invalid request.
          */
         for (UUID seatId : request.seatIds()) {
             ensureSeatExists(screening.hallId(), seatId);
@@ -78,14 +108,16 @@ public class BookingService {
         }
 
         /*
-         * The hold starts after validation is complete
-         * Booking expiry and Redis TTL use the same duration
+         * The hold starts after validation is complete.
+         * Booking expiry and Redis TTL use the same duration.
          */
         LocalDateTime expiresAt = createdAt.plus(holdDuration);
 
         // sold seats remain unavailable after their temporary Redis holds expire
         if (confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
-                request.screeningId(), request.seatIds())) {
+                request.screeningId(),
+                request.seatIds()
+        )) {
             throw new SeatAlreadyReservedException(request.screeningId());
         }
 
@@ -94,10 +126,10 @@ public class BookingService {
         try {
             for (UUID seatId : request.seatIds()) {
                 boolean acquired = redisSeatHoldService.holdSeat(
-                                request.screeningId(),
-                                seatId,
-                                booking.getId(),
-                                holdDuration);
+                        request.screeningId(),
+                        seatId,
+                        booking.getId(),
+                        holdDuration);
 
                 if (!acquired) {
                     throw new SeatAlreadyReservedException(request.screeningId());
@@ -106,9 +138,11 @@ public class BookingService {
                 acquiredSeatIds.add(seatId);
             }
 
-            // recheck after acquiring Redis holds to narrow the confirmation race
+            // recheck sold seats after acquiring Redis holds
             if (confirmedSeatRepository.existsByScreeningIdAndSeatIdIn(
-                    request.screeningId(), request.seatIds())) {
+                    request.screeningId(),
+                    request.seatIds()
+            )) {
                 throw new SeatAlreadyReservedException(request.screeningId());
             }
 
@@ -121,21 +155,34 @@ public class BookingService {
         } catch (RuntimeException exception) {
 
             /*
-             * Redis is outside the PostgreSQL transaction
-             * release every hold acquired before the failure
+             * Redis is outside the PostgreSQL transaction.
+             * Release every hold acquired before the failure.
              */
             releaseSeats(
                     request.screeningId(),
                     booking.getId(),
-                    acquiredSeatIds
-            );
+                    acquiredSeatIds);
 
             throw exception;
         }
     }
 
+    // return bookings belonging to the authenticated Keycloak subject
     @Transactional(readOnly = true)
-    public BookingPaymentDetailsResponse getBookingPaymentDetails(UUID bookingId) {
+    public List<BookingResponse> getCustomerBookings(
+            UUID authenticatedCustomerId
+    ) {
+        return bookingRepository
+                .findByCustomerIdOrderByCreatedAtDesc(authenticatedCustomerId)
+                .stream()
+                .map(BookingResponse::from)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public BookingPaymentDetailsResponse getBookingPaymentDetails(
+            UUID bookingId
+    ) {
         Booking booking = bookingRepository
                 .findById(bookingId)
                 .orElseThrow(() -> new BookingNotFoundException(bookingId));
@@ -153,17 +200,19 @@ public class BookingService {
 
         Instant occurredAt = clock.instant();
 
-        LocalDateTime now = LocalDateTime.ofInstant(occurredAt, clock.getZone());
+        LocalDateTime now = LocalDateTime.ofInstant(
+                occurredAt,
+                clock.getZone());
 
         booking.cancel(now, screening.startsAt());
 
         BookingCancelledEvent bookingCancelledEvent = new BookingCancelledEvent(
-                UUID.randomUUID(),
-                booking.getId(),
-                booking.getCustomerId(),
-                booking.getContactEmail(),
-                booking.getScreeningId(),
-                occurredAt);
+                        UUID.randomUUID(),
+                        booking.getId(),
+                        booking.getCustomerId(),
+                        booking.getContactEmail(),
+                        booking.getScreeningId(),
+                        occurredAt);
 
         // store the event atomically with the booking status change
         outboxEventWriter.saveCancelled(bookingCancelledEvent, now);
@@ -171,11 +220,12 @@ public class BookingService {
         // surface database errors before registering the post-commit cleanup
         bookingRepository.flush();
 
-        List<UUID> seatIds = booking.getSeats().stream()
+        List<UUID> seatIds = booking.getSeats()
+                .stream()
                 .map(BookingSeat::getSeatId)
                 .toList();
 
-        // Redis cleanup must happen only after the PostgreSQL commit succeeds
+        // redis cleanup must happen only after PostgreSQL commit succeeds
         applicationEventPublisher.publishEvent(
                 new BookingSeatHoldsReleaseRequested(
                         booking.getId(),
@@ -195,13 +245,13 @@ public class BookingService {
                 redisSeatHoldService.releaseSeat(
                         screeningId,
                         seatId,
-                        bookingId
-                );
+                        bookingId);
+
             } catch (RuntimeException exception) {
 
                 /*
-                 * do not hide the original operation failure because cleanup failed
-                 * TTL will eventually remove a stale hold
+                 * Do not hide the original operation failure because cleanup failed.
+                 * TTL will eventually remove a stale hold.
                  */
                 log.warn(
                         "Failed to release Redis hold for screeningId={}, seatId={}, bookingId={}",
@@ -216,13 +266,16 @@ public class BookingService {
     private ScreeningClientResponse getScreening(UUID screeningId) {
         try {
             return screeningClient.getScreening(screeningId);
+
         } catch (FeignException.NotFound _) {
             throw new ScreeningNotFoundException(screeningId);
         }
     }
 
-    private void ensureScreeningIsAvailable(ScreeningClientResponse screening,
-            LocalDateTime now) {
+    private void ensureScreeningIsAvailable(
+            ScreeningClientResponse screening,
+            LocalDateTime now
+    ) {
         if (screening.status() != ScreeningClientStatus.SCHEDULED) {
             throw new ScreeningUnavailableException(screening.id());
         }
@@ -235,6 +288,7 @@ public class BookingService {
     private void ensureSeatExists(UUID hallId, UUID seatId) {
         try {
             cinemaClient.getSeat(hallId, seatId);
+
         } catch (FeignException.NotFound _) {
             throw new SeatNotFoundException(seatId);
         }

@@ -4,6 +4,7 @@ import com.atlascinema.booking.domain.Booking;
 import com.atlascinema.booking.domain.BookingStatus;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,6 +17,10 @@ import java.util.UUID;
 
 @Repository
 public interface BookingRepository extends JpaRepository<Booking, UUID> {
+
+    // fetch seats in the same query when building the customer's booking history.
+    @EntityGraph(attributePaths = "seats")
+    List<Booking> findByCustomerIdOrderByCreatedAtDesc(UUID customerId);
 
     // serialize confirmation with expiration and other booking updates
     @Lock(LockModeType.PESSIMISTIC_WRITE)

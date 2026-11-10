@@ -624,7 +624,6 @@ class BookingServiceTest {
             List<UUID> seatIds
     ) {
         return new CreateBookingRequest(
-                null,
                 "guest@example.com",
                 screeningId,
                 seatIds);

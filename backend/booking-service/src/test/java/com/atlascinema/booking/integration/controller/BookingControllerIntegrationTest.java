@@ -110,7 +110,6 @@ class BookingControllerIntegrationTest extends AbstractIntegrationTest {
     void createBooking_shouldReturnBadRequest_whenEmailIsInvalid() throws Exception {
 
         CreateBookingRequest request = new CreateBookingRequest(
-                        null,
                         "not-an-email",
                         screeningId,
                         List.of(seatId));
@@ -128,7 +127,6 @@ class BookingControllerIntegrationTest extends AbstractIntegrationTest {
     void createBooking_shouldReturnBadRequest_whenSeatIdsAreEmpty() throws Exception {
 
         CreateBookingRequest request = new CreateBookingRequest(
-                        null,
                         "guest@example.com",
                         screeningId,
                         List.of());
@@ -146,7 +144,6 @@ class BookingControllerIntegrationTest extends AbstractIntegrationTest {
     void createBooking_shouldReturnBadRequest_whenScreeningIdIsNull() throws Exception {
 
         CreateBookingRequest request = new CreateBookingRequest(
-                        null,
                         "guest@example.com",
                         null,
                         List.of(seatId));
@@ -272,8 +269,7 @@ class BookingControllerIntegrationTest extends AbstractIntegrationTest {
         mockExistingSeat(secondSeatId);
         mockExistingSeat(thirdSeatId);
 
-        CreateBookingRequest request = new CreateBookingRequest(null,
-                        "guest@example.com",
+        CreateBookingRequest request = new CreateBookingRequest("guest@example.com",
                         screeningId, List.of(
                                 seatId,
                                 secondSeatId,
@@ -327,7 +323,6 @@ class BookingControllerIntegrationTest extends AbstractIntegrationTest {
 
     private CreateBookingRequest validRequest() {
         return new CreateBookingRequest(
-                null,
                 "guest@example.com",
                 screeningId,
                 List.of(seatId));

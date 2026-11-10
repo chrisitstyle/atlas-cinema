@@ -88,7 +88,6 @@ class BookingExpirationIntegrationTest extends AbstractIntegrationTest {
 
         try {
             CreateBookingRequest firstRequest = new CreateBookingRequest(
-                            UUID.randomUUID(),
                             "first@example.com",
                             screeningId,
                             List.of(seatId));
@@ -110,7 +109,6 @@ class BookingExpirationIntegrationTest extends AbstractIntegrationTest {
                     .isFalse();
 
             CreateBookingRequest secondRequest = new CreateBookingRequest(
-                            UUID.randomUUID(),
                             "second@example.com",
                             screeningId,
                             List.of(seatId));

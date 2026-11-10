@@ -22,18 +22,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.*;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -216,10 +208,10 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
                 refundEvent.getPayload(),
                 BookingEventMessage.class);
 
-        assertThat(message.payload().path("paymentId").asText())
+        assertThat(message.payload().path("paymentId").asString())
                 .isEqualTo(paymentEvent.paymentId().toString());
 
-        assertThat(message.payload().path("reason").asText())
+        assertThat(message.payload().path("reason").asString())
                 .isEqualTo("BOOKING_NOT_CONFIRMABLE");
     }
 
@@ -496,8 +488,8 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
         assertThat(refundEvents).hasSize(1);
 
         UUID paymentToRefund = confirmedPaymentId.equals(firstPaymentEvent.paymentId())
-                        ? secondPaymentEvent.paymentId()
-                        : firstPaymentEvent.paymentId();
+                ? secondPaymentEvent.paymentId()
+                : firstPaymentEvent.paymentId();
 
         BookingEventMessage refundMessage = jsonMapper.readValue(
                 refundEvents.getFirst().getPayload(),
@@ -505,11 +497,11 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(refundMessage.bookingId()).isEqualTo(booking.getId());
 
-        assertThat(refundMessage.payload().path("paymentId").asText())
+        assertThat(refundMessage.payload().path("paymentId").asString())
                 .isEqualTo(paymentToRefund.toString());
 
         assertThat(
-                refundMessage.payload().path("providerTransactionId").asText()
+                refundMessage.payload().path("providerTransactionId").asString()
         ).isEqualTo("SIM-" + paymentToRefund);
     }
 
@@ -533,10 +525,10 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
         recordEvent(paymentEvent);
 
         boolean firstProcessing = bookingPaymentResultService.processEvent(
-                        paymentEvent.eventId());
+                paymentEvent.eventId());
 
         boolean repeatedProcessing = bookingPaymentResultService.processEvent(
-                        paymentEvent.eventId());
+                paymentEvent.eventId());
 
         assertThat(firstProcessing).isTrue();
 
@@ -558,7 +550,7 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
         // reprocessing the successful payment must not request a refund
         assertThat(outboxEventRepository.findAll())
                 .noneMatch(event -> "PaymentRefundRequested".equals(
-                                event.getEventType()));
+                        event.getEventType()));
     }
 
     private Booking createHeldBooking(LocalDateTime expiresAt) {
@@ -604,11 +596,11 @@ class BookingPaymentResultIntegrationTest extends AbstractIntegrationTest {
     private boolean isEventProcessed(UUID eventId) {
         Integer processedCount = jdbcTemplate.queryForObject(
                 """
-                SELECT COUNT(*)
-                FROM payment_inbox_events
-                WHERE event_id = ?
-                  AND processed_at IS NOT NULL
-                """,
+                        SELECT COUNT(*)
+                        FROM payment_inbox_events
+                        WHERE event_id = ?
+                          AND processed_at IS NOT NULL
+                        """,
                 Integer.class,
                 eventId);
 

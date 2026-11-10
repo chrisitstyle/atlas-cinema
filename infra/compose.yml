@@ -1,6 +1,47 @@
 name: atlas-cinema
 
 services:
+  # keycloak - local identity provider (development only)
+  keycloak-db:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in infra/.env}
+
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+
+    ports:
+      - "127.0.0.1:8180:8080"
+
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in infra/.env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in infra/.env}
+      KC_HOSTNAME: http://localhost:8180
+
+    volumes:
+      - ./keycloak/atlas-cinema-realm.json:/opt/keycloak/data/import/atlas-cinema-realm.json:ro
+
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+
   discovery-server:
     build:
       context: ../backend/discovery-server
@@ -42,6 +83,9 @@ services:
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
 
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
     depends_on:
       discovery-server:
         condition: service_started
@@ -82,6 +126,9 @@ services:
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
 
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
     depends_on:
       discovery-server:
         condition: service_started
@@ -121,6 +168,9 @@ services:
       DB_URL: jdbc:postgresql://screening-db:5432/screening_db
       DB_USERNAME: atlas
       DB_PASSWORD: atlas
+
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
 
     depends_on:
       discovery-server:
@@ -165,6 +215,15 @@ services:
       REDIS_PORT: 6379
 
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
+      # Credentials for booking-service machine-to-machine authentication
+      BOOKING_SERVICE_CLIENT_SECRET: ${BOOKING_SERVICE_CLIENT_SECRET:?Set BOOKING_SERVICE_CLIENT_SECRET in infra/.env}
+
+      # Internal Keycloak token endpoint
+      KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/token
 
     depends_on:
       discovery-server:
@@ -263,6 +322,14 @@ services:
       PAYMENT_OUTBOX_PUBLISHER_ENABLED: "true"
       PAYMENT_REFUND_PROCESSING_ENABLED: "true"
 
+      # OAuth2 Client Credentials configuration
+      PAYMENT_SERVICE_CLIENT_SECRET: ${PAYMENT_SERVICE_CLIENT_SECRET:?Set PAYMENT_SERVICE_CLIENT_SECRET in infra/.env}
+      KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/token
+
+      # validates incoming JWTs using the Atlas Cinema Keycloak realm
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
+
     depends_on:
       discovery-server:
         condition: service_started
@@ -283,6 +350,9 @@ services:
     environment:
       EUREKA_URL: http://discovery-server:8761/eureka/
       EUREKA_PREFER_IP: "true"
+
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/atlas-cinema
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/atlas-cinema/protocol/openid-connect/certs
 
     depends_on:
       - discovery-server
@@ -366,3 +436,4 @@ volumes:
   booking-db-data:
   notification-db-data:
   payment-db-data:
+  keycloak-db-data:

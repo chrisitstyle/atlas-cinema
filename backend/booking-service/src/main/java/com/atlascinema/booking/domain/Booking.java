@@ -1,3 +1,4 @@
+
 package com.atlascinema.booking.domain;
 
 import com.atlascinema.booking.exception.BookingCancellationNotAllowedException;
@@ -14,6 +15,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
+/**
+ * Represents a cinema booking and manages its lifecycle.
+ * Revokes guest payment access when the booking reaches a terminal state.
+ */
 @Entity
 @Table(name = "bookings")
 @Getter
@@ -53,11 +58,15 @@ public class Booking {
     @Column(name = "confirmed_payment_id")
     private UUID confirmedPaymentId;
 
-    @OneToMany(mappedBy = "booking",
-            cascade = CascadeType.ALL,
-            orphanRemoval = true)
-    private List<BookingSeat> seats = new ArrayList<>();
+    @Column(name = "guest_payment_token_hash", length = 64)
+    private String guestPaymentTokenHash;
 
+    @OneToMany(
+            mappedBy = "booking",
+            cascade = CascadeType.ALL,
+            orphanRemoval = true
+    )
+    private List<BookingSeat> seats = new ArrayList<>();
 
     private Booking(
             UUID id,
@@ -96,13 +105,27 @@ public class Booking {
                 BigDecimal.ZERO);
     }
 
+    /**
+     * Assigns a guest payment token hash to an anonymous booking.
+     */
+    public void assignGuestPaymentTokenHash(String tokenHash) {
+        if (customerId != null) {
+            throw new IllegalStateException("Guest payment tokens cannot be assigned to customer bookings");
+        }
+
+        if (tokenHash == null || !tokenHash.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid guest payment token hash");
+        }
+
+        this.guestPaymentTokenHash = tokenHash;
+    }
+
     public void addSeat(
             UUID seatId,
             BigDecimal price
     ) {
         boolean alreadyAdded = seats.stream()
-                .anyMatch(seat -> seat.getSeatId()
-                                .equals(seatId));
+                .anyMatch(seat -> seat.getSeatId().equals(seatId));
 
         if (alreadyAdded) {
             throw new SeatAlreadyAddedException(seatId);
@@ -120,7 +143,9 @@ public class Booking {
         this.expiresAt = expiresAt;
     }
 
-    public void cancel(LocalDateTime now, LocalDateTime screeningStartsAt
+    public void cancel(
+            LocalDateTime now,
+            LocalDateTime screeningStartsAt
     ) {
         if (status != BookingStatus.HELD) {
             throw new BookingCancellationNotAllowedException(id);
@@ -131,23 +156,32 @@ public class Booking {
         }
 
         status = BookingStatus.CANCELLED;
+
+        revokeGuestPaymentToken();
     }
 
-    // cancel a held booking after its payment has definitively failed
+    /**
+     * Cancels a held booking after a definitive payment failure.
+     */
     public void cancelAfterPaymentFailure() {
         if (status != BookingStatus.HELD) {
             throw new IllegalStateException("Only held bookings can be cancelled after payment failure");
         }
 
         status = BookingStatus.CANCELLED;
+
+        revokeGuestPaymentToken();
     }
 
-    // Confirm a held booking and remember the payment responsible for the sale
+    /**
+     * Confirms a paid booking and records the successful payment.
+     */
     public void markAsConfirmed(
             LocalDateTime confirmedAt,
             UUID paymentId
     ) {
         Objects.requireNonNull(confirmedAt, "Confirmation time is required");
+
         Objects.requireNonNull(paymentId, "Payment id is required");
 
         if (status != BookingStatus.HELD
@@ -159,13 +193,27 @@ public class Booking {
 
         this.confirmedPaymentId = paymentId;
         this.status = BookingStatus.CONFIRMED;
+
+        revokeGuestPaymentToken();
     }
 
+    /**
+     * Expires a previously held booking.
+     */
     public void markAsExpired() {
         if (status != BookingStatus.HELD) {
-            throw new IllegalStateException("Only held booking can be marked as expired");
+            throw new IllegalStateException("Only held bookings can be marked as expired");
         }
 
         status = BookingStatus.EXPIRED;
+
+        revokeGuestPaymentToken();
+    }
+
+    /**
+     * Revokes payment access associated with an anonymous booking
+     */
+    private void revokeGuestPaymentToken() {
+        this.guestPaymentTokenHash = null;
     }
 }
